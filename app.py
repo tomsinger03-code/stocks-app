@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 import os
 from datetime import datetime
 import time
-from database import init_db, save_stock
+from database import init_db, save_stock, init_picks_table, save_pick, update_pick_price, update_pick_outcome, get_all_picks, get_open_picks
+from sheets_sync import add_pick_to_sheet, update_pick_in_sheet, sync_all_picks_to_sheet, is_connected as sheets_connected
 from ml_model import (
     train_model_background, predict, get_status,
     SCAN_UNIVERSE, extract_features, FEATURE_COLS
@@ -14,6 +15,7 @@ from ml_model import (
 load_dotenv()
 
 init_db()
+init_picks_table()
 train_model_background()  # start ML training in background
 
 app = Flask(__name__)
@@ -468,40 +470,108 @@ def get_movers():
 
 @app.route('/api/screener', methods=['POST'])
 def screener():
-    """Screen stocks based on criteria (original feature, kept intact)."""
+    """
+    Smart screener — finds stocks that look like they're ABOUT to spike.
+    Filters: price range, volume building, near lows, not already run.
+    Output feeds directly into ML scan universe.
+    """
     try:
-        criteria = request.json
-        popular_stocks = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "META", "NVDA", "JPM", "V", "JNJ"]
+        import yfinance as yf
+        from ml_model import SCAN_UNIVERSE, extract_features
+
+        criteria = request.json or {}
+        min_price    = float(criteria.get('minPrice', 1))
+        max_price    = float(criteria.get('maxPrice', 30))
+        min_vol_surge = float(criteria.get('minVolSurge', 2.0))
+        max_rsi      = float(criteria.get('maxRsi', 70))
+        min_consec_down = int(criteria.get('minConsecDown', 0))
+        near_low_pct = float(criteria.get('nearLowPct', 200))  # % above 52w low
+
         results = []
+        skipped = []
 
-        for ticker in popular_stocks:
-            quote = cached_get(f"{FINNHUB_BASE_URL}/quote", {"symbol": ticker, "token": FINNHUB_API_KEY})
-            metrics = cached_get(f"{FINNHUB_BASE_URL}/stock/metric", {"symbol": ticker, "metric": "all", "token": FINNHUB_API_KEY}).get('metric', {})
-            data = {
-                "price": quote.get('c'),
-                "pe": metrics.get('peBasic'),
-                "dividendYield": metrics.get('dividendYield'),
-                "week52High": metrics.get('52WeekHigh'),
-                "week52Low": metrics.get('52WeekLow'),
-                "marketCap": metrics.get('marketCapBasic'),
-            }
+        for ticker in SCAN_UNIVERSE:
+            try:
+                hist = yf.Ticker(ticker).history(period="3mo", interval="1d", auto_adjust=True)
+                if hist is None or len(hist) < 25:
+                    continue
 
-            passes = True
-            if criteria.get('minPE') and data.get('pe') and data['pe'] < criteria['minPE']:
-                passes = False
-            if criteria.get('maxPE') and data.get('pe') and data['pe'] > criteria['maxPE']:
-                passes = False
-            if criteria.get('minDividend') and data.get('dividendYield') and data['dividendYield'] < criteria['minDividend']:
-                passes = False
+                closes  = hist["Close"].tolist()
+                volumes = hist["Volume"].tolist()
+                opens   = hist["Open"].tolist()
+                price   = closes[-1]
 
-            if passes and data.get('price'):
-                candles = get_candles(ticker)
-                score = MomentumScorer.score(ticker, candles, data)["score"] if candles else 50
-                results.append({"ticker": ticker, "price": data['price'], "pe": data.get('pe'),
-                                 "dividendYield": data.get('dividendYield'), "score": score})
+                # Price range filter
+                if not (min_price <= price <= max_price):
+                    continue
 
-        results.sort(key=lambda x: x['score'], reverse=True)
-        return jsonify({"results": results})
+                feats = extract_features(closes, volumes, opens)
+                if not feats:
+                    continue
+
+                # Volume building (not already peaked)
+                vol_surge = feats.get("vol_surge_20d", 1)
+                if vol_surge < min_vol_surge:
+                    skipped.append(f"{ticker}: low vol surge {vol_surge:.1f}x")
+                    continue
+
+                # Not already overbought
+                rsi = feats.get("rsi", 50)
+                if rsi > max_rsi:
+                    skipped.append(f"{ticker}: RSI {rsi:.0f} too high")
+                    continue
+
+                # Not already spiked
+                mom3 = feats.get("mom3d", 0) or 0
+                if mom3 >= 15:
+                    skipped.append(f"{ticker}: already spiked {mom3:.1f}%")
+                    continue
+
+                # Near 52w low filter
+                pct_above_low = feats.get("price_vs_52low", 999)
+                if pct_above_low > near_low_pct:
+                    skipped.append(f"{ticker}: {pct_above_low:.0f}% above 52w low")
+                    continue
+
+                # Consecutive down days (oversold pressure building)
+                consec = feats.get("consec_down", 0)
+                if consec < min_consec_down:
+                    continue
+
+                change_pct = (closes[-1] - closes[-2]) / closes[-2] * 100 if len(closes) >= 2 else 0
+
+                results.append({
+                    "ticker": ticker,
+                    "price": round(price, 2),
+                    "changePercent": round(change_pct, 2),
+                    "signals": {
+                        "rsi": round(rsi, 1),
+                        "volSurge20": round(vol_surge, 1),
+                        "volSurge5": round(feats.get("vol_surge_5d", 1), 1),
+                        "mom3d": round(mom3, 2),
+                        "mom5d": round(feats.get("mom5d", 0), 2),
+                        "consecDown": consec,
+                        "pctAbove52wLow": round(pct_above_low, 1),
+                        "bollSqueeze": round(feats.get("boll_squeeze", 0), 4),
+                        "atr": round(feats.get("atr_pct", 0), 2),
+                    }
+                })
+                time.sleep(0.1)
+
+            except Exception as e:
+                skipped.append(f"{ticker}: {e}")
+                continue
+
+        # Sort by volume surge (strongest signal first)
+        results.sort(key=lambda x: x["signals"]["volSurge20"], reverse=True)
+
+        return jsonify({
+            "results": results,
+            "passed": len(results),
+            "scanned": len(SCAN_UNIVERSE),
+            "skipped": len(skipped),
+            "filters_applied": criteria,
+        })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -568,7 +638,7 @@ def ml_scan():
     for ticker in SCAN_UNIVERSE:
         try:
             hist = yf.Ticker(ticker).history(period="3mo", interval="1d", auto_adjust=True)
-            if hist is None or len(hist) < 55:
+            if hist is None or len(hist) < 25:
                 continue
 
             closes  = hist["Close"].tolist()
@@ -583,9 +653,36 @@ def ml_scan():
             price = closes[-1]
             change_pct = (closes[-1] - closes[-2]) / closes[-2] * 100 if len(closes) >= 2 else 0
 
-            # Also get momentum signals for display
+            # ── FILTER OUT STOCKS THAT ALREADY SPIKED ──
+            # Don't suggest stocks where the move already happened
             from ml_model import extract_features, FEATURE_COLS
             feats = extract_features(closes, volumes, opens)
+
+            if feats:
+                # Already ran: up 15%+ in last 3 days
+                mom3 = feats.get("mom3d", 0) or 0
+                if mom3 >= 15:
+                    errors.append(f"{ticker}: already spiked +{mom3:.1f}% (skipped)")
+                    continue
+
+                # Already overbought
+                rsi = feats.get("rsi", 50) or 50
+                if rsi > 78:
+                    errors.append(f"{ticker}: overbought RSI {rsi:.0f} (skipped)")
+                    continue
+
+                # Volume surge already peaked (yesterday was bigger than today)
+                vols = volumes[-3:] if len(volumes) >= 3 else volumes
+                if len(vols) >= 2 and vols[-2] > vols[-1] * 2:
+                    # Volume was 2x bigger yesterday = surge already passed
+                    errors.append(f"{ticker}: volume surge already peaked (skipped)")
+                    continue
+
+                # Price already at or near 52w high (no room to run)
+                pct_from_high = feats.get("price_vs_52high", 100) or 100
+                if pct_from_high < 3:
+                    errors.append(f"{ticker}: near 52w high (skipped)")
+                    continue
 
             # News sentiment
             news = get_news_sentiment(ticker)
@@ -624,6 +721,7 @@ def ml_scan():
         "results": results,
         "scanned": len(results),
         "errors": len(errors),
+        "error_details": errors[:5],
         "timestamp": datetime.now().isoformat(),
         "model_trained_at": status.get("trained_at"),
         "note": "mlProb = model probability of 15%+ gain within 3 trading days. NOT financial advice."
@@ -638,6 +736,159 @@ def ml_retrain():
         os.remove("momentum_model.pkl")
     train_model_background()
     return jsonify({"message": "Retraining started", "status": "training"})
+
+
+
+@app.route('/api/picks', methods=['GET'])
+def get_picks():
+    """Get all tracked picks."""
+    picks = get_all_picks()
+    total = len(picks)
+    wins = sum(1 for p in picks if p.get('outcome') == 'WIN')
+    slow_wins = sum(1 for p in picks if p.get('outcome') == 'SLOW WIN')
+    losses = sum(1 for p in picks if p.get('outcome') == 'LOSS')
+    return jsonify({
+        "picks": picks,
+        "sheetsConnected": sheets_connected(),
+        "sheetId": "1f4FtUqsXuVlyptRxbsSSiouoVa7IEDM2Y3SNWSYc7ho",
+        "stats": {
+            "total": total,
+            "wins": wins,
+            "slowWins": slow_wins,
+            "losses": losses,
+            "open": total - wins - slow_wins - losses,
+            "winRate": round((wins + slow_wins) / max(total, 1) * 100, 1)
+        }
+    })
+
+
+@app.route('/api/picks', methods=['POST'])
+def add_pick():
+    """Manually save a pick from ML scan."""
+    data = request.json or {}
+    ticker = data.get('ticker', '').upper()
+    if not ticker:
+        return jsonify({"error": "ticker required"}), 400
+    entry_price    = data.get('entryPrice', 0)
+    ml_prob        = data.get('mlProb', 0)
+    predicted_gain = data.get('predictedGain', 15)
+    predicted_days = data.get('predictedDays', 3)
+    pick_id = save_pick(
+        ticker=ticker,
+        entry_price=entry_price,
+        ml_prob=ml_prob,
+        predicted_gain_pct=predicted_gain,
+        predicted_days=predicted_days
+    )
+    # Sync to Google Sheets
+    from datetime import datetime as _dt
+    add_pick_to_sheet(
+        pick_id, ticker, _dt.now().strftime('%Y-%m-%d'),
+        entry_price, ml_prob, predicted_gain, predicted_days
+    )
+    return jsonify({"id": pick_id, "message": f"{ticker} pick saved", "sheets": sheets_connected()})
+
+
+@app.route('/api/picks/<int:pick_id>/price', methods=['POST'])
+def add_pick_price(pick_id):
+    """Add a daily price update for a pick."""
+    data = request.json or {}
+    day = int(data.get('day', 1))
+    price = float(data.get('price', 0))
+    if not (1 <= day <= 5):
+        return jsonify({"error": "day must be 1-5"}), 400
+    update_pick_price(pick_id, day, price)
+    update_pick_in_sheet(pick_id, day=day, price=price)
+    return jsonify({"message": f"Day {day} price updated"})
+
+
+@app.route('/api/picks/check-outcomes', methods=['POST'])
+def check_outcomes():
+    """
+    Auto-check open picks against current prices.
+    Labels WIN / SLOW WIN / LOSS based on your rules:
+    - Hits target within predicted_days+1 = WIN
+    - Hits target but later = SLOW WIN
+    - Predicted days passed, target not hit = LOSS
+    """
+    import yfinance as yf
+    from datetime import datetime, timedelta
+
+    open_picks = get_open_picks()
+    updated = []
+
+    for pick in open_picks:
+        try:
+            ticker = pick['ticker']
+            entry  = pick['entry_price'] or 0
+            if entry <= 0:
+                continue
+
+            target_gain = pick['predicted_gain_pct'] or 15
+            pred_days   = pick['predicted_days'] or 3
+            pick_date   = pick['pick_date']
+
+            # Get current price + recent history
+            hist = yf.Ticker(ticker).history(period="1mo", interval="1d", auto_adjust=True)
+            if hist is None or len(hist) < 1:
+                continue
+
+            closes = hist["Close"].tolist()
+            dates  = [str(d.date()) for d in hist.index.tolist()]
+
+            # Find index of pick date
+            try:
+                start_idx = next(i for i, d in enumerate(dates) if d >= pick_date)
+            except StopIteration:
+                start_idx = len(dates) - 1
+
+            target_price = entry * (1 + target_gain / 100)
+            days_elapsed = len(dates) - start_idx
+            outcome = None
+            outcome_day = None
+            actual_gain = None
+
+            # Check each day after pick
+            for i, (d, c) in enumerate(zip(dates[start_idx:], closes[start_idx:]), 1):
+                gain_pct = (c - entry) / entry * 100
+                if c >= target_price:
+                    if i <= pred_days + 1:
+                        outcome = "WIN"
+                    else:
+                        outcome = "SLOW WIN"
+                    outcome_day = i
+                    actual_gain = round(gain_pct, 2)
+                    break
+
+                # Update daily prices in DB
+                if i <= 5:
+                    update_pick_price(pick['id'], i, round(c, 2))
+
+            # If predicted window passed and no hit
+            if outcome is None and days_elapsed > pred_days + 1:
+                latest_gain = (closes[-1] - entry) / entry * 100
+                outcome = "LOSS"
+                outcome_day = days_elapsed
+                actual_gain = round(latest_gain, 2)
+
+            if outcome:
+                update_pick_outcome(pick['id'], outcome, outcome_day, actual_gain)
+                updated.append({
+                    "ticker": ticker,
+                    "outcome": outcome,
+                    "day": outcome_day,
+                    "gain": actual_gain
+                })
+
+        except Exception as e:
+            print(f"Outcome check error {pick['ticker']}: {e}")
+            continue
+
+    # Sync all to sheets after outcome check
+    if updated:
+        all_picks = get_all_picks()
+        sync_all_picks_to_sheet(all_picks)
+    return jsonify({"updated": updated, "checked": len(open_picks)})
 
 
 if __name__ == '__main__':

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Momentum Scout</title>
+    <title>Singer Scout</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
     <style>
@@ -565,8 +565,8 @@
 
     <header>
         <div class="logo">
-            <span class="logo-title">MOMENTUM SCOUT</span>
-            <span class="logo-sub">short-term signal tracker</span>
+            <span class="logo-title">SINGER SCOUT</span>
+            <span class="logo-sub">your personal stock predictor</span>
         </div>
         <div class="status-dot" title="Live"></div>
     </header>
@@ -580,6 +580,7 @@
                 <button class="tab-btn" onclick="switchTab('movers', this)">⚡ Quick Movers</button>
                 <button class="tab-btn" onclick="switchTab('screener', this)">🔍 Screener</button>
                 <button class="tab-btn" onclick="switchTab('ml', this)">🤖 ML Predictor</button>
+                <button class="tab-btn" onclick="switchTab('tracker', this)">📈 Tracker</button>
             </div>
 
             <!-- LOOKUP TAB -->
@@ -660,7 +661,7 @@
             <div id="tab-ml" class="tab-panel">
                 <div class="movers-header">
                     <div>
-                        <div style="font-weight:800; font-size:16px;">ML 15% Move Predictor</div>
+                        <div style="font-weight:800; font-size:16px;">ML 15% Move Predictor — Singer Scout</div>
                         <div style="color:var(--muted); font-size:12px; font-family:var(--mono); margin-top:4px;">
                             Random Forest model trained on 2yr history · ~300 stocks
                         </div>
@@ -709,22 +710,57 @@
 
             <!-- SCREENER TAB -->
             <div id="tab-screener" class="tab-panel">
-                <div class="screener-form">
+                <div style="margin-bottom:16px;">
+                    <div style="font-weight:800; font-size:16px; margin-bottom:4px;">Pre-Explosion Screener</div>
+                    <div style="color:var(--muted); font-size:12px; font-family:var(--mono);">Finds stocks building to a spike — feeds into ML Predictor</div>
+                </div>
+                <div class="screener-form" style="grid-template-columns:repeat(3,1fr) auto; margin-bottom:16px;">
                     <div class="form-field">
-                        <label>Min P/E</label>
-                        <input type="number" id="f-min-pe" value="5" step="1">
+                        <label>Min Price $</label>
+                        <input type="number" id="f-min-price" value="1" step="0.5">
                     </div>
                     <div class="form-field">
-                        <label>Max P/E</label>
-                        <input type="number" id="f-max-pe" value="40" step="1">
+                        <label>Max Price $</label>
+                        <input type="number" id="f-max-price" value="30" step="1">
                     </div>
                     <div class="form-field">
-                        <label>Min Div Yield %</label>
-                        <input type="number" id="f-min-div" value="0" step="0.1">
+                        <label>Min Vol Surge</label>
+                        <input type="number" id="f-vol-surge" value="2" step="0.5">
                     </div>
                     <button class="btn" onclick="runScreener()">SCREEN</button>
                 </div>
+                <div class="screener-form" style="grid-template-columns:repeat(3,1fr) auto; margin-bottom:16px;">
+                    <div class="form-field">
+                        <label>Max RSI</label>
+                        <input type="number" id="f-max-rsi" value="70" step="1">
+                    </div>
+                    <div class="form-field">
+                        <label>Max % Above 52w Low</label>
+                        <input type="number" id="f-near-low" value="200" step="10">
+                    </div>
+                    <div class="form-field">
+                        <label>Min Down Days</label>
+                        <input type="number" id="f-consec-down" value="0" step="1">
+                    </div>
+                    <button class="btn btn-outline" onclick="sendScreenerToML()" id="btn-send-ml" style="display:none">SEND TO ML →</button>
+                </div>
                 <div id="screener-results"></div>
+            </div>
+
+            <!-- TRACKER TAB -->
+            <div id="tab-tracker" class="tab-panel">
+                <div class="movers-header">
+                    <div>
+                        <div style="font-weight:800; font-size:16px;">Pick Tracker</div>
+                        <div style="color:var(--muted); font-size:12px; font-family:var(--mono); margin-top:4px;">Track ML picks · enter daily prices · auto-scores outcomes</div>
+                    </div>
+                    <button class="btn" onclick="checkOutcomes()">AUTO-CHECK OUTCOMES</button>
+                </div>
+
+                <div id="sheets-status" style="font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:12px;"></div>
+                <div id="tracker-stats" style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:20px;"></div>
+
+                <div id="tracker-list"></div>
             </div>
         </div>
 
@@ -910,17 +946,53 @@ function loadTicker(ticker) {
 
 // ── Screener ──
 async function runScreener() {
-    const el = document.getElementById('screener-results');
-    el.innerHTML = '<div class="loading"><span>●</span>&nbsp; Running screener…</div>';
-    try {
-        const res = await fetch(`${API}/screener`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                minPE: parseFloat(document.getElementById('f-min-pe').value),
-                maxPE: parseFloat(document.getElementById('f-max-pe').value),
-                minDividend: parseFloat(document.getElementById('f-min-div').value) / 100
-            })
+            const el = document.getElementById('screener-results');
+            el.innerHTML = '<div class="loading"><span>●</span>&nbsp; Scanning for pre-explosion setups…</div>';
+            const sendBtn = document.getElementById('btn-send-ml');
+            if (sendBtn) sendBtn.style.display = 'none';
+            try {
+                const res = await fetch(`${API}/screener`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        minPrice:      parseFloat(document.getElementById('f-min-price')?.value || 1),
+                        maxPrice:      parseFloat(document.getElementById('f-max-price')?.value || 30),
+                        minVolSurge:   parseFloat(document.getElementById('f-vol-surge')?.value || 2),
+                        maxRsi:        parseFloat(document.getElementById('f-max-rsi')?.value || 70),
+                        nearLowPct:    parseFloat(document.getElementById('f-near-low')?.value || 200),
+                        minConsecDown: parseInt(document.getElementById('f-consec-down')?.value || 0),
+                    })
+                });
+                const d = await res.json();
+                window._screenerResults = d.results || [];
+                if (!window._screenerResults.length) {
+                    el.innerHTML = '<div class="empty">No stocks passed filters. Try loosening criteria.</div>';
+                    return;
+                }
+                if (sendBtn) sendBtn.style.display = 'block';
+                el.innerHTML = `<div style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:12px;">
+                    ${window._screenerResults.length} stocks passed · ${d.scanned||0} scanned</div>` +
+                window._screenerResults.map(r => {
+                    const sig = r.signals || {};
+                    const vc = sig.volSurge20 >= 5 ? 'var(--accent)' : sig.volSurge20 >= 2 ? 'var(--warn)' : 'var(--muted)';
+                    return `<div class="screener-row" style="cursor:pointer;" onclick="loadTicker('${r.ticker}')">
+                        <div class="screener-ticker">${r.ticker}</div>
+                        <div style="font-family:var(--mono);font-size:13px;">$${fmt(r.price)}<br>
+                            <span style="font-size:10px;color:${r.changePercent>=0?'var(--accent)':'var(--danger)'};">${r.changePercent>=0?'+':''}${fmt(r.changePercent)}%</span></div>
+                        <div style="font-family:var(--mono);font-size:11px;color:var(--muted);">RSI ${sig.rsi??'–'} · ${sig.consecDown??0}d↓</div>
+                        <div style="font-family:var(--mono);font-size:11px;"><span style="color:${vc};">Vol ${sig.volSurge20??'–'}×</span><br>
+                            <span style="color:var(--muted);">${sig.pctAbove52wLow??'–'}% > 52wk low</span></div>
+                        <button class="btn btn-outline btn-sm" onclick="event.stopPropagation();loadTicker('${r.ticker}')">ANALYSE →</button>
+                    </div>`;
+                }).join('');
+            } catch(e) { el.innerHTML = '<div class="empty">Error: '+e.message+'</div>'; }
+        }
+
+        function sendScreenerToML() {
+            if (!window._screenerResults || !window._screenerResults.length) return;
+            window._mlUniverse = window._screenerResults.map(r => r.ticker);
+            switchTab('ml', document.querySelectorAll('.tab-btn')[3]);
+            setTimeout(runMLScan, 300);
         });
         const d = await res.json();
         if (!d.results.length) { el.innerHTML = '<div class="empty">No stocks match criteria.</div>'; return; }
@@ -1111,11 +1183,136 @@ loadWatchlist();
                             RSI ${sig.rsi ?? '–'} · Vol20 ${sig.volSurge20 != null ? sig.volSurge20+'×' : '–'} · ATR ${sig.atr ?? '–'}% · ${sig.consecDown ?? 0}d↓
                         </div>
                     </div>
-                    <div style="font-family:var(--mono); font-size:18px; font-weight:800; color:${probColor}; text-align:right;">${r.mlPct}%</div>
+                    <div style="font-family:var(--mono); font-size:18px; font-weight:800; color:${probColor}; text-align:right;" onclick="event.stopPropagation();savePickFromML('${r.ticker}',${r.price||0},${r.mlProb||0})" title="Click to save to tracker">${r.mlPct}%<br><span style="font-size:9px;color:var(--muted);">SAVE</span></div>
                     <div class="badge ${r.mlProb >= 0.4 ? 'badge-strong' : r.mlProb >= 0.25 ? 'badge-neutral' : 'badge-weak'}">${r.mlProb >= 0.4 ? 'STRONG' : r.mlProb >= 0.25 ? 'POSSIBLE' : 'LOW'}</div>
                 </div>
                 ${headline ? `<div style="padding:6px 14px 8px; font-size:11px; color:${newsColor}; border-top:1px solid var(--border); font-family:var(--mono);">${newsLabel} ${headline}</div>` : ''}
             </div>`;
+        }
+
+        
+        // ── Tracker ──
+        async function loadTracker() {
+            const statsEl = document.getElementById('tracker-stats');
+            const listEl  = document.getElementById('tracker-list');
+            if (!statsEl || !listEl) return;
+            listEl.innerHTML = '<div class="loading"><span>●</span>&nbsp; Loading picks...</div>';
+            try {
+                const res = await fetch(`${API}/picks`);
+                const d = await res.json();
+                const s = d.stats || {};
+                // Sheets status indicator
+                const sheetLink = d.sheetId ? `<a href="https://docs.google.com/spreadsheets/d/${d.sheetId}" target="_blank" style="color:var(--accent);font-family:var(--mono);font-size:11px;">📊 Open Google Sheet →</a>` : '';
+                const sheetsEl = document.getElementById('sheets-status');
+                if (sheetsEl) sheetsEl.innerHTML = d.sheetsConnected
+                    ? `✅ Syncing to Google Sheets &nbsp;${sheetLink}`
+                    : `⚠️ Google Sheets not connected`;
+
+                statsEl.innerHTML = [
+                    {label:'TOTAL PICKS', val: s.total||0, color:'var(--text)'},
+                    {label:'WINS', val: s.wins||0, color:'var(--accent)'},
+                    {label:'SLOW WINS', val: s.slowWins||0, color:'var(--warn)'},
+                    {label:'LOSSES', val: s.losses||0, color:'var(--danger)'},
+                ].map(x => `<div class="stat-box">
+                    <div class="stat-name">${x.label}</div>
+                    <div class="stat-val" style="color:${x.color};font-size:24px;">${x.val}</div>
+                </div>`).join('') +
+                `<div class="stat-box" style="grid-column:span 4;">
+                    <div class="stat-name">WIN RATE (wins + slow wins)</div>
+                    <div style="background:var(--bg);border-radius:4px;height:8px;margin-top:6px;">
+                        <div style="height:100%;width:${s.winRate||0}%;background:var(--accent);border-radius:4px;"></div>
+                    </div>
+                    <div style="font-family:var(--mono);font-size:13px;margin-top:4px;color:var(--accent);">${s.winRate||0}%</div>
+                </div>`;
+
+                if (!d.picks || !d.picks.length) {
+                    listEl.innerHTML = '<div class="empty">No picks yet. Run ML Scan and save picks to track them.</div>';
+                    return;
+                }
+
+                listEl.innerHTML = d.picks.map(p => {
+                    const outColor = p.outcome === 'WIN' ? 'var(--accent)' :
+                                     p.outcome === 'SLOW WIN' ? 'var(--warn)' :
+                                     p.outcome === 'LOSS' ? 'var(--danger)' : 'var(--muted)';
+                    const days = [1,2,3,4,5].map(n => {
+                        const price = p[`day${n}_price`];
+                        const gain  = price && p.entry_price ? ((price-p.entry_price)/p.entry_price*100).toFixed(1) : null;
+                        return `<td style="font-family:var(--mono);font-size:11px;padding:6px 8px;border-bottom:1px solid var(--border);">
+                            ${price ? `$${fmt(price)}<br><span style="color:${gain>=0?'var(--accent)':'var(--danger)'};font-size:10px;">${gain>=0?'+':''}${gain}%</span>` : 
+                            `<button class="btn btn-outline btn-sm" onclick="addDayPrice(${p.id}, ${n})">+Day ${n}</button>`}
+                        </td>`;
+                    }).join('');
+                    return `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden;">
+                        <div style="display:grid;grid-template-columns:70px 80px 80px 1fr auto;align-items:center;gap:10px;padding:10px 14px;">
+                            <div style="font-family:var(--mono);font-size:14px;font-weight:700;color:var(--accent);">${p.ticker}</div>
+                            <div style="font-family:var(--mono);font-size:12px;">$${fmt(p.entry_price)}<br>
+                                <span style="color:var(--muted);font-size:10px;">${p.pick_date}</span></div>
+                            <div style="font-family:var(--mono);font-size:12px;color:var(--warn);">${p.ml_prob ? (p.ml_prob*100).toFixed(0)+'%' : '–'}<br>
+                                <span style="color:var(--muted);font-size:10px;">prob</span></div>
+                            <div style="font-family:var(--mono);font-size:11px;color:var(--muted);">
+                                Target: +${p.predicted_gain_pct||15}% in ${p.predicted_days||3}d</div>
+                            <div style="font-family:var(--mono);font-size:14px;font-weight:800;color:${outColor};">
+                                ${p.outcome || 'OPEN'}
+                                ${p.actual_gain_pct != null ? `<br><span style="font-size:11px;">${p.actual_gain_pct>0?'+':''}${p.actual_gain_pct}%</span>` : ''}
+                            </div>
+                        </div>
+                        <table style="width:100%;border-collapse:collapse;">
+                            <tr style="background:var(--bg);">
+                                <th style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:4px 8px;text-align:left;border-bottom:1px solid var(--border);">DAY 1</th>
+                                <th style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:4px 8px;text-align:left;border-bottom:1px solid var(--border);">DAY 2</th>
+                                <th style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:4px 8px;text-align:left;border-bottom:1px solid var(--border);">DAY 3</th>
+                                <th style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:4px 8px;text-align:left;border-bottom:1px solid var(--border);">DAY 4</th>
+                                <th style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:4px 8px;text-align:left;border-bottom:1px solid var(--border);">DAY 5</th>
+                            </tr>
+                            <tr>${days}</tr>
+                        </table>
+                    </div>`;
+                }).join('');
+            } catch(e) {
+                listEl.innerHTML = '<div class="empty">Error loading picks: '+e.message+'</div>';
+            }
+        }
+
+        async function addDayPrice(pickId, day) {
+            const price = prompt(`Enter Day ${day} closing price for this pick ($):`);
+            if (!price || isNaN(parseFloat(price))) return;
+            await fetch(`${API}/picks/${pickId}/price`, {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({day, price: parseFloat(price)})
+            });
+            loadTracker();
+        }
+
+        async function savePickFromML(ticker, entryPrice, mlProb) {
+            const res = await fetch(`${API}/picks`, {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({ticker, entryPrice, mlProb,
+                    predictedGain: 15, predictedDays: 3})
+            });
+            const d = await res.json();
+            alert(`✅ ${ticker} saved to tracker! ID: ${d.id}`);
+            loadTracker();
+        }
+
+        async function checkOutcomes() {
+            const btn = event.target;
+            btn.textContent = 'Checking...';
+            btn.disabled = true;
+            try {
+                const res = await fetch(`${API}/picks/check-outcomes`, {method:'POST'});
+                const d = await res.json();
+                alert(`Updated ${d.updated.length} picks:\n` +
+                    d.updated.map(u => `${u.ticker}: ${u.outcome} Day ${u.day} (${u.gain>0?'+':''}${u.gain}%)`).join('\n') ||
+                    'No open picks to update.');
+                loadTracker();
+            } catch(e) {
+                alert('Error: '+e.message);
+            } finally {
+                btn.textContent = 'AUTO-CHECK OUTCOMES';
+                btn.disabled = false;
+            }
         }
 
         </script>
