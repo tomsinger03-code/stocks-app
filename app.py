@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 import requests
 from dotenv import load_dotenv
@@ -457,15 +457,7 @@ def remove_from_watchlist(ticker):
 
 @app.route('/')
 def index():
-    return jsonify({
-        "message": "Stock Momentum App API",
-        "endpoints": {
-            "GET /api/stock/<ticker>": "Stock data + momentum score",
-            "GET /api/movers": "Quick-win momentum scanner (top setups right now)",
-            "POST /api/screener": "Screen by PE / dividend",
-            "GET|POST|DELETE /api/watchlist": "Manage watchlist",
-        }
-    })
+    return send_file('index.html')
 
 
 if __name__ == '__main__':
