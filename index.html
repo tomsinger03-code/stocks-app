@@ -949,6 +949,90 @@ function showErr(msg) {
 // ── Init ──
 document.getElementById('ticker-input').addEventListener('keydown', e => { if (e.key === 'Enter') searchStock(); });
 loadWatchlist();
-</script>
+
+        // ── ML Predictor ──
+        async function checkMLStatus() {
+            try {
+                const res = await fetch(`${API}/ml/status`);
+                const d = await res.json();
+                const el = document.getElementById('ml-status-text');
+                if (!el) return;
+                if (d.status === 'ready') {
+                    el.innerHTML = `✅ Model ready · trained ${d.trained_at ? new Date(d.trained_at).toLocaleString() : 'unknown'} · <span style="color:var(--accent)">Run ML Scan to score all stocks</span>`;
+                } else if (d.status === 'training') {
+                    const lastLog = d.log && d.log.length ? d.log[d.log.length-1] : '';
+                    el.innerHTML = `⏳ Training in progress... ${lastLog} <button class="btn btn-sm btn-outline" onclick="checkMLStatus()" style="margin-left:10px">Refresh</button>`;
+                } else if (d.status === 'failed') {
+                    const lastLog = d.log && d.log.length ? d.log[d.log.length-1] : 'unknown error';
+                    el.innerHTML = `❌ Training failed · ${lastLog}`;
+                } else {
+                    el.innerHTML = `⏳ Model not trained yet · starts automatically on server launch`;
+                }
+            } catch(e) {
+                const el = document.getElementById('ml-status-text');
+                if (el) el.textContent = 'Cannot reach backend';
+            }
+        }
+
+        async function runMLScan() {
+            const resultsEl = document.getElementById('ml-results');
+            resultsEl.innerHTML = '<div class="loading"><span>●</span>&nbsp; Running ML scan across ~300 stocks… this takes 1-2 minutes</div>';
+            try {
+                const res = await fetch(`${API}/ml/scan`);
+                const d = await res.json();
+                if (!res.ok || d.error) {
+                    if (d.status === 'training') {
+                        resultsEl.innerHTML = `<div class="empty">⏳ Model still training...<br><br>${(d.log||[]).slice(-3).join('<br>')}<br><br>Check back in a few minutes and try again.</div>`;
+                    } else {
+                        resultsEl.innerHTML = `<div class="empty">Error: ${d.error || 'unknown'}</div>`;
+                    }
+                    return;
+                }
+                if (!d.results || !d.results.length) {
+                    resultsEl.innerHTML = '<div class="empty">No results returned.</div>';
+                    return;
+                }
+                const topPicks = d.results.filter(r => r.mlProb >= 0.3);
+                const rest = d.results.filter(r => r.mlProb < 0.3);
+                let html = `<div style="font-family:var(--mono); font-size:11px; color:var(--muted); margin-bottom:12px;">
+                    ${d.scanned} stocks scanned · ${topPicks.length} high-probability picks · ${new Date(d.timestamp).toLocaleTimeString()}
+                </div>`;
+                if (topPicks.length) {
+                    html += `<div style="font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--accent); margin-bottom:8px;">🎯 High Probability Picks (≥30%)</div>`;
+                    html += topPicks.map(r => mlRow(r, true)).join('');
+                }
+                if (rest.length) {
+                    html += `<div style="font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--muted); margin:16px 0 8px;">All Others (ranked)</div>`;
+                    html += rest.slice(0, 50).map(r => mlRow(r, false)).join('');
+                }
+                resultsEl.innerHTML = html;
+            } catch(e) {
+                resultsEl.innerHTML = '<div class="empty">Error connecting to backend.</div>';
+            }
+        }
+
+        function mlRow(r, highlight) {
+            const probColor = r.mlProb >= 0.4 ? 'var(--accent)' : r.mlProb >= 0.25 ? 'var(--warn)' : 'var(--muted)';
+            const border = highlight ? 'border-color: rgba(0,229,160,0.4);' : '';
+            return `
+            <div class="mover-row" style="${border}" onclick="loadTicker('${r.ticker}')">
+                <div class="mover-ticker">${r.ticker}</div>
+                <div class="mover-price">$${fmt(r.price)}<br>
+                    <span style="font-size:10px; color:${r.changePercent >= 0 ? 'var(--accent)' : 'var(--danger)'}">${r.changePercent >= 0 ? '+' : ''}${fmt(r.changePercent)}%</span>
+                </div>
+                <div>
+                    <div class="mini-bar-wrap">
+                        <div class="mini-bar" style="width:${Math.min(r.mlProb*200,100)}%; background:${probColor};"></div>
+                    </div>
+                    <div style="font-family:var(--mono); font-size:10px; color:var(--muted); margin-top:3px;">
+                        RSI ${r.signals.rsi ?? '–'} · Vol ${r.signals.volSurge != null ? r.signals.volSurge+'×' : '–'} · ATR ${r.signals.atr ?? '–'}%
+                    </div>
+                </div>
+                <div style="font-family:var(--mono); font-size:18px; font-weight:800; color:${probColor}; text-align:right;">${r.mlPct}%</div>
+                <div class="badge ${r.mlProb >= 0.4 ? 'badge-strong' : r.mlProb >= 0.25 ? 'badge-neutral' : 'badge-weak'}">${r.mlProb >= 0.4 ? 'STRONG' : r.mlProb >= 0.25 ? 'POSSIBLE' : 'LOW'}</div>
+            </div>`;
+        }
+
+        </script>
 </body>
 </html>
