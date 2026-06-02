@@ -165,13 +165,23 @@ _model_lock = threading.Lock()
 _model_status      = "untrained"
 _model_trained_at  = None
 _training_log      = []
+_progress = {
+    "current": 0,
+    "total": 0,
+    "ticker": "",
+    "samples": 0,
+    "positives": 0,
+    "pct": 0.0,
+    "phase": "idle",  # idle | fetching | training | done
+}
 MODEL_PATH = "momentum_model.pkl"
 
 def get_status():
     return {
         "status":     _model_status,
         "trained_at": _model_trained_at,
-        "log":        _training_log[-15:],
+        "log":        _training_log[-20:],
+        "progress":   _progress.copy(),
     }
 
 def _log(msg):
@@ -205,8 +215,12 @@ def _train_model():
                 _log("Cached model loaded OK")
                 return
 
-        _log(f"Training on {len(SCAN_UNIVERSE)} small/micro cap stocks...")
+        total = len(SCAN_UNIVERSE)
+        _log(f"Training on {total} small/micro cap stocks...")
         _log("Target: 15%+ gain within 3 trading days")
+
+        _progress.update({"total": total, "current": 0, "phase": "fetching",
+                          "samples": 0, "positives": 0, "pct": 0.0, "ticker": ""})
 
         X, y = [], []
         trained_on  = 0
@@ -215,13 +229,19 @@ def _train_model():
 
         for ticker in SCAN_UNIVERSE:
             try:
+                _progress["ticker"] = ticker
+                _progress["phase"]  = "fetching"
+
                 hist = yf.Ticker(ticker).history(period="2y", interval="1d", auto_adjust=True)
                 if hist is None or len(hist) < 30:
+                    _progress["current"] += 1
                     continue
+
                 closes  = hist["Close"].tolist()
                 volumes = hist["Volume"].tolist()
                 highs   = hist["High"].tolist()
 
+                _progress["phase"] = "processing"
                 for j in range(25, len(closes) - FWD_DAYS):
                     feats = extract_features(closes[:j+1], volumes[:j+1])
                     if feats is None:
@@ -233,14 +253,22 @@ def _train_model():
                     y.append(label)
 
                 trained_on += 1
-                if trained_on % 15 == 0:
-                    pos = sum(y)
-                    pct = 100*pos/len(y) if y else 0
-                    _log(f"  {trained_on}/{len(SCAN_UNIVERSE)} done — {len(X)} samples, {pos} positives ({pct:.1f}%)")
+                pos = sum(y)
+                pct = 100*pos/len(y) if y else 0
+                _progress.update({
+                    "current":   trained_on,
+                    "samples":   len(X),
+                    "positives": pos,
+                    "pct":       round(pct, 1),
+                    "ticker":    ticker,
+                })
+                if trained_on % 10 == 0:
+                    _log(f"  {trained_on}/{total} — {len(X)} samples, {pos} positives ({pct:.1f}%)")
                 time.sleep(0.15)
 
             except Exception as e:
                 _log(f"  {ticker}: skipped ({e})")
+                _progress["current"] = _progress.get("current", 0) + 1
                 continue
 
         if len(X) < 50:
@@ -251,6 +279,7 @@ def _train_model():
         X = np.array(X)
         y = np.array(y)
         pos_rate = sum(y)/len(y)
+        _progress["phase"] = "training"
         _log(f"Fitting on {len(X)} samples — {100*pos_rate:.1f}% positive rate")
 
         clf = _RandomForest(

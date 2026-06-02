@@ -250,6 +250,80 @@ class MomentumScorer:
 # Routes
 # ──────────────────────────────────────────────
 
+
+
+def get_news_sentiment(ticker):
+    """
+    Fetch recent news sentiment from Finnhub.
+    Returns: { score: -1 to 1, count: int, headlines: [...] }
+    """
+    try:
+        from datetime import timedelta
+        import datetime as dt
+        to_date   = dt.date.today().isoformat()
+        from_date = (dt.date.today() - timedelta(days=7)).isoformat()
+        data = cached_get(
+            f"{FINNHUB_BASE_URL}/company-news",
+            {"symbol": ticker, "from": from_date, "to": to_date, "token": FINNHUB_API_KEY},
+            ttl=1800
+        )
+        if not data or not isinstance(data, list):
+            return {"score": 0, "count": 0, "headlines": []}
+
+        # Finnhub doesn't give sentiment scores on free tier news
+        # but we can do keyword scoring on headlines
+        positive_words = ["surge","soar","jump","gain","beat","record","launch",
+                          "win","award","contract","approve","approved","fda",
+                          "partnership","buy","upgrade","growth","profit","revenue"]
+        negative_words = ["fall","drop","loss","miss","cut","downgrade","lawsuit",
+                          "fail","decline","warning","risk","probe","fraud","delisted"]
+
+        score_sum = 0
+        headlines = []
+        for article in data[:10]:
+            headline = (article.get("headline") or "").lower()
+            s = sum(1 for w in positive_words if w in headline)
+            s -= sum(1 for w in negative_words if w in headline)
+            score_sum += s
+            headlines.append({
+                "title": article.get("headline", ""),
+                "source": article.get("source", ""),
+                "datetime": article.get("datetime", 0),
+                "sentiment": "positive" if s > 0 else "negative" if s < 0 else "neutral"
+            })
+
+        count = len(data)
+        norm_score = max(-1, min(1, score_sum / max(count, 1)))
+        return {"score": round(norm_score, 3), "count": count, "headlines": headlines[:5]}
+
+    except Exception as e:
+        return {"score": 0, "count": 0, "headlines": [], "error": str(e)}
+
+
+def check_sec_filings(ticker):
+    """
+    Check for recent SEC 8-K filings (material events = potential catalysts).
+    Uses SEC EDGAR free API.
+    """
+    try:
+        url = f"https://data.sec.gov/submissions/CIK{ticker}.json"
+        # Use ticker->CIK lookup
+        lookup = cached_get(
+            "https://efts.sec.gov/LATEST/search-index?q=%22" + ticker + "%22&dateRange=custom&startdt=" +
+            (__import__('datetime').date.today() - __import__('datetime').timedelta(days=14)).isoformat() +
+            "&enddt=" + __import__('datetime').date.today().isoformat() + "&forms=8-K",
+            {},
+            ttl=3600
+        )
+        # Simplified: just check EDGAR full-text search
+        hits = lookup.get("hits", {}).get("hits", []) if isinstance(lookup, dict) else []
+        recent_8k = len(hits) > 0
+        return {"recent_8k": recent_8k, "count": len(hits)}
+    except:
+        return {"recent_8k": False, "count": 0}
+
+
+
 @app.route('/api/stock/<ticker>', methods=['GET'])
 def get_stock(ticker):
     """Fetch stock data + momentum ML score."""
@@ -513,17 +587,28 @@ def ml_scan():
             from ml_model import extract_features, FEATURE_COLS
             feats = extract_features(closes, volumes, opens)
 
+            # News sentiment
+            news = get_news_sentiment(ticker)
+
             results.append({
                 "ticker": ticker,
                 "price": round(price, 2),
                 "changePercent": round(change_pct, 2),
                 "mlProb": prob,
                 "mlPct": round(prob * 100, 1),
+                "news": {
+                    "score": news["score"],
+                    "count": news["count"],
+                    "headlines": news["headlines"][:2],
+                },
                 "signals": {
                     "rsi": round(feats["rsi"], 1) if feats else None,
-                    "volSurge": round(feats["vol_surge"], 2) if feats else None,
-                    "mom5": round(feats["mom5"], 2) if feats else None,
-                    "atr": round(feats["atr"], 2) if feats else None,
+                    "volSurge20": round(feats["vol_surge_20d"], 1) if feats else None,
+                    "volSurge5": round(feats["vol_surge_5d"], 1) if feats else None,
+                    "mom5": round(feats["mom5d"], 2) if feats else None,
+                    "atr": round(feats["atr_pct"], 2) if feats else None,
+                    "consecDown": feats["consec_down"] if feats else None,
+                    "bollSqueeze": round(feats["boll_squeeze"], 4) if feats else None,
                 } if feats else {}
             })
 

@@ -668,8 +668,36 @@
                     <button class="btn" onclick="runMLScan()">RUN ML SCAN</button>
                 </div>
 
-                <div id="ml-status-bar" style="background:rgba(61,142,255,0.08); border:1px solid rgba(61,142,255,0.25); border-radius:8px; padding:12px 16px; font-family:var(--mono); font-size:12px; margin-bottom:16px;">
-                    <span id="ml-status-text">Checking model status...</span>
+                <div id="ml-status-bar" style="background:rgba(61,142,255,0.08); border:1px solid rgba(61,142,255,0.25); border-radius:8px; padding:16px; font-family:var(--mono); font-size:12px; margin-bottom:16px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                        <span id="ml-status-text">Checking model status...</span>
+                        <button class="btn btn-outline btn-sm" onclick="checkMLStatus()">↻ Refresh</button>
+                    </div>
+                    <div id="ml-progress-wrap" style="display:none;">
+                        <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+                            <span id="ml-progress-label" style="color:var(--accent);">Fetching data...</span>
+                            <span id="ml-progress-pct" style="color:var(--text);">0%</span>
+                        </div>
+                        <div style="background:var(--bg); border-radius:4px; height:8px; overflow:hidden; margin-bottom:8px;">
+                            <div id="ml-progress-bar" style="height:100%; background:var(--accent); border-radius:4px; width:0%; transition:width 0.5s ease;"></div>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:8px;">
+                            <div style="background:var(--bg); border-radius:6px; padding:8px; text-align:center;">
+                                <div style="font-size:16px; font-weight:800; color:var(--text);" id="ml-stat-stocks">–</div>
+                                <div style="font-size:9px; color:var(--muted); margin-top:2px;">STOCKS</div>
+                            </div>
+                            <div style="background:var(--bg); border-radius:6px; padding:8px; text-align:center;">
+                                <div style="font-size:16px; font-weight:800; color:var(--text);" id="ml-stat-samples">–</div>
+                                <div style="font-size:9px; color:var(--muted); margin-top:2px;">SAMPLES</div>
+                            </div>
+                            <div style="background:var(--bg); border-radius:6px; padding:8px; text-align:center;">
+                                <div style="font-size:16px; font-weight:800; color:var(--accent);" id="ml-stat-positive">–</div>
+                                <div style="font-size:9px; color:var(--muted); margin-top:2px;">15%+ MOVES</div>
+                            </div>
+                        </div>
+                        <div id="ml-current-ticker" style="margin-top:8px; font-size:11px; color:var(--muted);">Current: –</div>
+                        <div id="ml-log-tail" style="margin-top:8px; font-size:10px; color:var(--muted); max-height:60px; overflow:hidden;"></div>
+                    </div>
                 </div>
 
                 <div style="background:rgba(255,159,28,0.07); border:1px solid rgba(255,159,28,0.2); border-radius:8px; padding:10px 14px; font-family:var(--mono); font-size:11px; color:var(--muted); margin-bottom:16px;">
@@ -951,27 +979,76 @@ document.getElementById('ticker-input').addEventListener('keydown', e => { if (e
 loadWatchlist();
 
         // ── ML Predictor ──
+        let _mlPollTimer = null;
+
         async function checkMLStatus() {
             try {
                 const res = await fetch(`${API}/ml/status`);
                 const d = await res.json();
                 const el = document.getElementById('ml-status-text');
                 if (!el) return;
+
+                const p = d.progress || {};
+                const progressWrap = document.getElementById('ml-progress-wrap');
+
                 if (d.status === 'ready') {
-                    el.innerHTML = `✅ Model ready · trained ${d.trained_at ? new Date(d.trained_at).toLocaleString() : 'unknown'} · <span style="color:var(--accent)">Run ML Scan to score all stocks</span>`;
+                    el.innerHTML = `✅ Model ready · trained ${d.trained_at ? new Date(d.trained_at).toLocaleString() : 'unknown'}`;
+                    if (progressWrap) progressWrap.style.display = 'none';
+                    stopMLPolling();
+
                 } else if (d.status === 'training') {
-                    const lastLog = d.log && d.log.length ? d.log[d.log.length-1] : '';
-                    el.innerHTML = `⏳ Training in progress... ${lastLog} <button class="btn btn-sm btn-outline" onclick="checkMLStatus()" style="margin-left:10px">Refresh</button>`;
+                    const pct = p.total > 0 ? Math.round(p.current / p.total * 100) : 0;
+                    const phase = p.phase === 'training' ? '🧠 Fitting model...' :
+                                  p.phase === 'fetching' ? '📡 Fetching data...' :
+                                  p.phase === 'processing' ? '⚙️ Processing...' : '⏳ Starting...';
+                    el.textContent = phase;
+
+                    if (progressWrap) progressWrap.style.display = 'block';
+                    const bar = document.getElementById('ml-progress-bar');
+                    if (bar) bar.style.width = pct + '%';
+                    const pctEl = document.getElementById('ml-progress-pct');
+                    if (pctEl) pctEl.textContent = pct + '%';
+
+                    const labelEl = document.getElementById('ml-progress-label');
+                    if (labelEl) labelEl.textContent = p.phase === 'training' ? 'Fitting Random Forest...' : `Processing ${p.ticker || '...'}`;
+
+                    const stocksEl = document.getElementById('ml-stat-stocks');
+                    if (stocksEl) stocksEl.textContent = `${p.current||0}/${p.total||0}`;
+                    const samplesEl = document.getElementById('ml-stat-samples');
+                    if (samplesEl) samplesEl.textContent = (p.samples||0).toLocaleString();
+                    const posEl = document.getElementById('ml-stat-positive');
+                    if (posEl) posEl.textContent = `${p.positives||0} (${p.pct||0}%)`;
+
+                    const tickerEl = document.getElementById('ml-current-ticker');
+                    if (tickerEl && p.ticker) tickerEl.textContent = `Current: ${p.ticker}`;
+
+                    const logEl = document.getElementById('ml-log-tail');
+                    if (logEl && d.log) logEl.innerHTML = d.log.slice(-3).map(l =>
+                        `<div style="opacity:0.6">${l}</div>`).join('');
+
+                    startMLPolling();
+
                 } else if (d.status === 'failed') {
-                    const lastLog = d.log && d.log.length ? d.log[d.log.length-1] : 'unknown error';
-                    el.innerHTML = `❌ Training failed · ${lastLog}`;
+                    el.innerHTML = `❌ Training failed · ${d.log && d.log.length ? d.log[d.log.length-1] : 'unknown'}`;
+                    if (progressWrap) progressWrap.style.display = 'none';
+                    stopMLPolling();
                 } else {
-                    el.innerHTML = `⏳ Model not trained yet · starts automatically on server launch`;
+                    el.textContent = '⏳ Model not trained yet · starts automatically on server launch';
+                    startMLPolling();
                 }
             } catch(e) {
                 const el = document.getElementById('ml-status-text');
                 if (el) el.textContent = 'Cannot reach backend';
             }
+        }
+
+        function startMLPolling() {
+            if (_mlPollTimer) return;
+            _mlPollTimer = setInterval(checkMLStatus, 4000);
+        }
+
+        function stopMLPolling() {
+            if (_mlPollTimer) { clearInterval(_mlPollTimer); _mlPollTimer = null; }
         }
 
         async function runMLScan() {
@@ -1014,22 +1091,30 @@ loadWatchlist();
         function mlRow(r, highlight) {
             const probColor = r.mlProb >= 0.4 ? 'var(--accent)' : r.mlProb >= 0.25 ? 'var(--warn)' : 'var(--muted)';
             const border = highlight ? 'border-color: rgba(0,229,160,0.4);' : '';
+            const news = r.news || {};
+            const newsColor = news.score > 0.1 ? 'var(--accent)' : news.score < -0.1 ? 'var(--danger)' : 'var(--muted)';
+            const newsLabel = news.score > 0.1 ? '📰+' : news.score < -0.1 ? '📰−' : news.count > 0 ? '📰' : '';
+            const headline = news.headlines && news.headlines.length ? news.headlines[0].title : '';
+            const sig = r.signals || {};
             return `
-            <div class="mover-row" style="${border}" onclick="loadTicker('${r.ticker}')">
-                <div class="mover-ticker">${r.ticker}</div>
-                <div class="mover-price">$${fmt(r.price)}<br>
-                    <span style="font-size:10px; color:${r.changePercent >= 0 ? 'var(--accent)' : 'var(--danger)'}">${r.changePercent >= 0 ? '+' : ''}${fmt(r.changePercent)}%</span>
-                </div>
-                <div>
-                    <div class="mini-bar-wrap">
-                        <div class="mini-bar" style="width:${Math.min(r.mlProb*200,100)}%; background:${probColor};"></div>
+            <div style="margin-bottom:8px; border:1px solid var(--border); ${border} border-radius:8px; overflow:hidden;">
+                <div class="mover-row" style="border:none; border-radius:0; margin:0;" onclick="loadTicker('${r.ticker}')">
+                    <div class="mover-ticker">${r.ticker}</div>
+                    <div class="mover-price">$${fmt(r.price)}<br>
+                        <span style="font-size:10px; color:${r.changePercent >= 0 ? 'var(--accent)' : 'var(--danger)'}">${r.changePercent >= 0 ? '+' : ''}${fmt(r.changePercent)}%</span>
                     </div>
-                    <div style="font-family:var(--mono); font-size:10px; color:var(--muted); margin-top:3px;">
-                        RSI ${r.signals.rsi ?? '–'} · Vol ${r.signals.volSurge != null ? r.signals.volSurge+'×' : '–'} · ATR ${r.signals.atr ?? '–'}%
+                    <div>
+                        <div class="mini-bar-wrap">
+                            <div class="mini-bar" style="width:${Math.min(r.mlProb*200,100)}%; background:${probColor};"></div>
+                        </div>
+                        <div style="font-family:var(--mono); font-size:10px; color:var(--muted); margin-top:3px;">
+                            RSI ${sig.rsi ?? '–'} · Vol20 ${sig.volSurge20 != null ? sig.volSurge20+'×' : '–'} · ATR ${sig.atr ?? '–'}% · ${sig.consecDown ?? 0}d↓
+                        </div>
                     </div>
+                    <div style="font-family:var(--mono); font-size:18px; font-weight:800; color:${probColor}; text-align:right;">${r.mlPct}%</div>
+                    <div class="badge ${r.mlProb >= 0.4 ? 'badge-strong' : r.mlProb >= 0.25 ? 'badge-neutral' : 'badge-weak'}">${r.mlProb >= 0.4 ? 'STRONG' : r.mlProb >= 0.25 ? 'POSSIBLE' : 'LOW'}</div>
                 </div>
-                <div style="font-family:var(--mono); font-size:18px; font-weight:800; color:${probColor}; text-align:right;">${r.mlPct}%</div>
-                <div class="badge ${r.mlProb >= 0.4 ? 'badge-strong' : r.mlProb >= 0.25 ? 'badge-neutral' : 'badge-weak'}">${r.mlProb >= 0.4 ? 'STRONG' : r.mlProb >= 0.25 ? 'POSSIBLE' : 'LOW'}</div>
+                ${headline ? `<div style="padding:6px 14px 8px; font-size:11px; color:${newsColor}; border-top:1px solid var(--border); font-family:var(--mono);">${newsLabel} ${headline}</div>` : ''}
             </div>`;
         }
 
