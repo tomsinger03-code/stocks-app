@@ -993,22 +993,7 @@ async function runScreener() {
             window._mlUniverse = window._screenerResults.map(r => r.ticker);
             switchTab('ml', document.querySelectorAll('.tab-btn')[3]);
             setTimeout(runMLScan, 300);
-        });
-        const d = await res.json();
-        if (!d.results.length) { el.innerHTML = '<div class="empty">No stocks match criteria.</div>'; return; }
-        el.innerHTML = d.results.map(r => `
-            <div class="screener-row">
-                <div class="screener-ticker">${r.ticker}</div>
-                <div class="screener-stats">PE: ${r.pe ? fmt(r.pe,1) : '–'}<br>Div: ${r.dividendYield ? (r.dividendYield*100).toFixed(1)+'%' : '–'}</div>
-                <div style="font-family:var(--mono); font-size:13px;">$${fmt(r.price)}</div>
-                <div style="font-family:var(--mono); font-size:16px; font-weight:700; color:${scoreColor(r.score)}">${r.score}</div>
-                <button class="btn btn-outline btn-sm" onclick="loadTicker('${r.ticker}')">ANALYSE →</button>
-            </div>
-        `).join('');
-    } catch(e) {
-        el.innerHTML = '<div class="empty">Error running screener.</div>';
-    }
-}
+        }
 
 // ── Watchlist ──
 async function loadWatchlist() {
