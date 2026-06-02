@@ -6,10 +6,15 @@ import os
 from datetime import datetime
 import time
 from database import init_db, save_stock
+from ml_model import (
+    train_model_background, predict, get_status,
+    SCAN_UNIVERSE, extract_features, FEATURE_COLS
+)
 
 load_dotenv()
 
 init_db()
+train_model_background()  # start ML training in background
 
 app = Flask(__name__)
 CORS(app)
@@ -460,5 +465,95 @@ def index():
     return send_file('index.html')
 
 
+
+@app.route('/api/ml/status', methods=['GET'])
+def ml_status():
+    """Check if the ML model is trained and ready."""
+    return jsonify(get_status())
+
+
+@app.route('/api/ml/scan', methods=['GET'])
+def ml_scan():
+    """
+    Score all stocks in the universe by ML probability of 15%+ gain in 3 days.
+    Returns sorted list. Model must be trained first (/api/ml/status to check).
+    """
+    status = get_status()
+    if status["status"] != "ready":
+        return jsonify({
+            "error": "Model not ready yet",
+            "status": status["status"],
+            "log": status["log"]
+        }), 202
+
+    import yfinance as yf
+
+    results = []
+    errors = []
+
+    for ticker in SCAN_UNIVERSE:
+        try:
+            hist = yf.Ticker(ticker).history(period="3mo", interval="1d", auto_adjust=True)
+            if hist is None or len(hist) < 55:
+                continue
+
+            closes  = hist["Close"].tolist()
+            volumes = hist["Volume"].tolist()
+            opens   = hist["Open"].tolist()
+
+            prob = predict(closes, volumes, opens)
+            if prob is None:
+                continue
+
+            # Current price and recent change
+            price = closes[-1]
+            change_pct = (closes[-1] - closes[-2]) / closes[-2] * 100 if len(closes) >= 2 else 0
+
+            # Also get momentum signals for display
+            from ml_model import extract_features, FEATURE_COLS
+            feats = extract_features(closes, volumes, opens)
+
+            results.append({
+                "ticker": ticker,
+                "price": round(price, 2),
+                "changePercent": round(change_pct, 2),
+                "mlProb": prob,
+                "mlPct": round(prob * 100, 1),
+                "signals": {
+                    "rsi": round(feats["rsi"], 1) if feats else None,
+                    "volSurge": round(feats["vol_surge"], 2) if feats else None,
+                    "mom5": round(feats["mom5"], 2) if feats else None,
+                    "atr": round(feats["atr"], 2) if feats else None,
+                } if feats else {}
+            })
+
+            time.sleep(0.05)
+
+        except Exception as e:
+            errors.append(f"{ticker}: {e}")
+            continue
+
+    results.sort(key=lambda x: x["mlProb"], reverse=True)
+
+    return jsonify({
+        "results": results,
+        "scanned": len(results),
+        "errors": len(errors),
+        "timestamp": datetime.now().isoformat(),
+        "model_trained_at": status.get("trained_at"),
+        "note": "mlProb = model probability of 15%+ gain within 3 trading days. NOT financial advice."
+    })
+
+
+@app.route('/api/ml/retrain', methods=['POST'])
+def ml_retrain():
+    """Force retrain the model (deletes cached model file)."""
+    import os
+    if os.path.exists("momentum_model.pkl"):
+        os.remove("momentum_model.pkl")
+    train_model_background()
+    return jsonify({"message": "Retraining started", "status": "training"})
+
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(__import__('os').environ.get('PORT', 5000)))
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
