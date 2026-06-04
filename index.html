@@ -725,12 +725,23 @@
             <div id="tab-ml" class="tab-panel">
                 <div class="movers-header">
                     <div>
-                        <div style="font-weight:800; font-size:16px;">ML 15% Move Predictor — Singer Scout</div>
+                        <div style="font-weight:800; font-size:16px;">ML Predictor — Singer Scout</div>
                         <div style="color:var(--muted); font-size:12px; font-family:var(--mono); margin-top:4px;">
-                            Random Forest model trained on 2yr history · ~300 stocks
+                            Run the Screener first → click SEND TO ML → results appear here
                         </div>
                     </div>
-                    <button class="btn" id="btn-run-ml" onclick="runMLScan()">RUN ML SCAN</button>
+                    <button class="btn btn-outline" onclick="switchTab('screener', document.querySelectorAll('.tab-btn')[2])">← Go to Screener</button>
+                </div>
+
+                <div id="ml-empty-state" style="text-align:center;padding:60px 20px;display:block;">
+                    <div style="font-size:40px;margin-bottom:16px;">🔍</div>
+                    <div style="font-weight:800;font-size:18px;margin-bottom:8px;">No candidates yet</div>
+                    <div style="color:var(--muted);font-family:var(--mono);font-size:12px;margin-bottom:20px;">
+                        Use the Screener to find today's candidates,<br>then click SEND TO ML → to score them here
+                    </div>
+                    <button class="btn" onclick="switchTab('screener', document.querySelectorAll('.tab-btn')[2])">
+                        Open Screener →
+                    </button>
                 </div>
 
                 <div id="ml-status-bar" style="background:rgba(61,142,255,0.08); border:1px solid rgba(61,142,255,0.25); border-radius:8px; padding:16px; font-family:var(--mono); font-size:12px; margin-bottom:16px;">
@@ -769,7 +780,7 @@
                     ⚠ ML probability = historical pattern match only. 15% moves in 3 days are rare and high risk. Never bet more than you can lose.
                 </div>
 
-                <div id="ml-results"></div>
+                <div id="ml-results" style="display:none;"></div>
             </div>
 
             <!-- SCREENER TAB -->
@@ -1192,7 +1203,11 @@ loadWatchlist();
 
         async function runMLScan(tickerOverride) {
             const resultsEl = document.getElementById('ml-results');
-            resultsEl.innerHTML = '<div class="loading"><span>●</span>&nbsp; Running ML scan across ~300 stocks… this takes 1-2 minutes</div>';
+            const emptyState = document.getElementById('ml-empty-state');
+            if (emptyState) emptyState.style.display = 'none';
+            resultsEl.style.display = 'block';
+            const scanCount = tickerOverride ? tickerOverride.length : '~70';
+            resultsEl.innerHTML = '<div class="loading"><span>●</span>&nbsp; Scoring ' + scanCount + ' stocks… please wait</div>';
             try {
                 const url = tickerOverride && tickerOverride.length
                     ? `${API}/ml/scan?tickers=${tickerOverride.join(',')}`
@@ -1208,7 +1223,8 @@ loadWatchlist();
                     return;
                 }
                 if (!d.results || !d.results.length) {
-                    resultsEl.innerHTML = '<div class="empty">No results returned.</div>';
+                    resultsEl.innerHTML = '<div class="empty">No results — try loosening screener filters.</div>';
+                    if (emptyState) emptyState.style.display = 'block';
                     return;
                 }
                 const topPicks = d.results.filter(r => r.mlProb >= 0.3);

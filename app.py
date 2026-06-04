@@ -555,11 +555,6 @@ def screener():
             if any(k in tl for k in EXCLUDE_KEYWORDS):
                 return None
             try:
-                # Quick float/reverse split check first
-                float_info = get_float_data(ticker)
-                if float_info.get("hasReverseSplit"):
-                    return None  # Skip reverse split stocks
-                
                 hist = yf.Ticker(ticker).history(period="3mo", interval="1d", auto_adjust=True)
                 if hist is None or len(hist) < 25:
                     return None
@@ -730,23 +725,11 @@ def ml_scan():
 
     def score_ticker(ticker):
         try:
-            # Skip leveraged ETFs
+            # Skip leveraged ETFs instantly
             tl = ticker.lower()
-            if any(k in tl for k in ['2x','3x','-2x','-3x','ultra','sqqq','tqqq','spxu','uvxy']):
+            if any(k in tl for k in ['2x','3x','ultra','sqqq','tqqq','spxu','uvxy']):
                 return None
-
-            # Check for reverse split
-            tk = yf.Ticker(ticker)
-            try:
-                actions = tk.actions
-                if actions is not None and not actions.empty and "Stock Splits" in actions.columns:
-                    splits = actions["Stock Splits"].tail(10)
-                    if any(0 < v < 1 for v in splits if v != 0):
-                        return None  # Skip reverse split stocks
-            except:
-                pass
-
-            hist = tk.history(period="3mo", interval="1d", auto_adjust=True)
+            hist = yf.Ticker(ticker).history(period="3mo", interval="1d", auto_adjust=True)
             if hist is None or len(hist) < 25:
                 return None
             closes  = hist["Close"].tolist()
