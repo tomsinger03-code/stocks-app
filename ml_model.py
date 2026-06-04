@@ -66,6 +66,11 @@ SCAN_UNIVERSE = [
     "CLOV","WISH","BARK","OPAD","SPIR","ATIP","BMBL","BIRD",
     "RBLX","DKNG","PENN","ACMR","IONQ","QUBT","RGTI",
     "LAZR","MVIS","OUST","LIDR","VLDR","HYLN","NKLA",
+    # Today's winners added
+    "CXAI","TWAV","HCAT","WXM","SBFM","AVOS","SAVG",
+    # New winners 03/06
+    "STI","VERU","FOXX","EDHL","INDP","SPRC","LNZA","LSE","ROLR","MNTS","BNAI","ASTI",
+    "BJDX","LASE","DXST","STAK","RKTO","ZJYL","JLHL","SWMR","FOFO","PUSA","ABTS",
     "SMCI","WOLF","CELH","NKTR","FATE","CRSP","EDIT","NTLA",
     "BEAM","PACB","VERV","TELA","RCKT","RETA","IRON","PRLD",
     # More small caps with history of big moves
@@ -73,7 +78,12 @@ SCAN_UNIVERSE = [
     "ILUS","NXXT","LPCN","ENTX","BHAT","HUDI","ATHE","CNET",
     "BIMI","SFUN","RETO","TOUR","CIFS","CLPS","AIFU","TAOP",
 ]
-SCAN_UNIVERSE = list(dict.fromkeys(SCAN_UNIVERSE))
+# Remove duplicates and exclude leveraged ETFs
+_ETF_EXCLUDE = ['2x','3x','-2x','-3x','ultra','leverage']
+SCAN_UNIVERSE = list(dict.fromkeys([
+    t for t in SCAN_UNIVERSE
+    if not any(k in t.lower() for k in _ETF_EXCLUDE)
+]))
 
 FEATURE_COLS = [
     "vol_surge_5d","vol_surge_20d","vol_acceleration",
