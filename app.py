@@ -798,17 +798,9 @@ def ml_scan():
                     errors.append(f"{ticker}: near 52w high (skipped)")
                     continue
 
-            # News sentiment (quick)
-            news = get_news_sentiment(ticker)
-
-            # Skip extended signals during scan — too slow
-            # Just do basic reverse split check
-            day_chg = (closes[-1]-closes[-2])/closes[-2]*100 if len(closes)>=2 else 0
-            if day_chg >= 40:
-                errors.append(f"{ticker}: likely reverse split skipped")
-                continue
-
-            ext = {"catalystScore": 0, "float": {}, "sec": {}, 
+            # No external API calls during scan — keep it fast
+            news = {"score": 0, "count": 0, "headlines": []}
+            ext = {"catalystScore": 0, "float": {}, "sec": {},
                    "insider": {}, "short": {}, "reddit": {}, "reverseSplit": False}
 
             results.append({
