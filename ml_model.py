@@ -33,6 +33,108 @@ import threading
 import numpy as np
 from datetime import datetime
 
+def _save_model_to_drive(model_data):
+    """Save trained model to Google Drive for persistence across restarts."""
+    try:
+        import json
+        from google.oauth2.service_account import Credentials
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseUpload
+        import io
+
+        creds_json = os.getenv("GOOGLE_CREDS_JSON")
+        if not creds_json:
+            return False
+
+        creds = Credentials.from_service_account_info(
+            json.loads(creds_json),
+            scopes=["https://www.googleapis.com/auth/drive"]
+        )
+        drive = build("drive", "v3", credentials=creds)
+
+        # Pickle the model
+        model_bytes = pickle.dumps(model_data)
+        media = MediaIoBaseUpload(
+            io.BytesIO(model_bytes),
+            mimetype="application/octet-stream",
+            resumable=False
+        )
+
+        # Check if file already exists
+        results = drive.files().list(
+            q="name='singer_scout_model.pkl' and trashed=false",
+            fields="files(id, name)"
+        ).execute()
+        files = results.get("files", [])
+
+        if files:
+            # Update existing file
+            drive.files().update(
+                fileId=files[0]["id"],
+                media_body=media
+            ).execute()
+        else:
+            # Create new file
+            drive.files().create(
+                body={"name": "singer_scout_model.pkl"},
+                media_body=media
+            ).execute()
+
+        print("Model saved to Google Drive")
+        return True
+    except Exception as e:
+        print(f"Drive save failed: {e}")
+        return False
+
+
+def _load_model_from_drive():
+    """Load trained model from Google Drive."""
+    try:
+        import json
+        from google.oauth2.service_account import Credentials
+        from googleapiclient.discovery import build
+        import io
+
+        creds_json = os.getenv("GOOGLE_CREDS_JSON")
+        if not creds_json:
+            return None
+
+        creds = Credentials.from_service_account_info(
+            json.loads(creds_json),
+            scopes=["https://www.googleapis.com/auth/drive"]
+        )
+        drive = build("drive", "v3", credentials=creds)
+
+        # Find model file
+        results = drive.files().list(
+            q="name='singer_scout_model.pkl' and trashed=false",
+            fields="files(id, name, modifiedTime)"
+        ).execute()
+        files = results.get("files", [])
+
+        if not files:
+            print("No saved model found in Drive")
+            return None
+
+        # Download
+        file_id = files[0]["id"]
+        request = drive.files().get_media(fileId=file_id)
+        buffer = io.BytesIO()
+        from googleapiclient.http import MediaIoBaseDownload
+        downloader = MediaIoBaseDownload(buffer, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+        buffer.seek(0)
+        model_data = pickle.loads(buffer.read())
+        print(f"Model loaded from Google Drive (saved {files[0].get('modifiedTime', 'unknown')})")
+        return model_data
+
+    except Exception as e:
+        print(f"Drive load failed: {e}")
+        return None
+
 _sklearn_loaded = False
 _RandomForest = None
 
@@ -165,7 +267,8 @@ _progress = {
     "pct": 0.0,
     "phase": "idle",  # idle | fetching | training | done
 }
-MODEL_PATH = "momentum_model.pkl"
+# Use persistent disk if available (Render), otherwise local
+MODEL_PATH = "/data/momentum_model.pkl" if os.path.exists("/data") else "momentum_model.pkl"
 
 def get_status():
     return {
@@ -195,22 +298,33 @@ def _train_model():
         _load_sklearn()
         import yfinance as yf
 
+        # Try loading from Google Drive first (survives restarts)
+        _log("Checking Google Drive for saved model...")
+        drive_model = _load_model_from_drive()
+        if drive_model and isinstance(drive_model, dict) and "models" in drive_model:
+            _models.update(drive_model["models"])
+            _gain_models.update(drive_model.get("gain_models", {}))
+            _model_status     = "ready"
+            _model_trained_at = datetime.now().isoformat()
+            _log("Model loaded from Google Drive — no retraining needed!")
+            return
+
+        # Fall back to local cache
         if os.path.exists(MODEL_PATH):
             age = time.time() - os.path.getmtime(MODEL_PATH)
             if age < 86400:
-                _log("Loading cached model...")
+                _log("Loading local cached model...")
                 with open(MODEL_PATH, "rb") as f:
                     saved = pickle.load(f)
                 if isinstance(saved, dict) and "models" in saved:
                     _models.update(saved["models"])
                     _gain_models.update(saved.get("gain_models", {}))
                 else:
-                    # Old format - skip and retrain
                     _log("Old model format - retraining...")
                     os.remove(MODEL_PATH)
                 _model_status     = "ready"
                 _model_trained_at = datetime.now().isoformat()
-                _log("Cached model loaded OK")
+                _log("Local cached model loaded OK")
                 return
 
         total = len(SCAN_UNIVERSE)
@@ -322,14 +436,21 @@ def _train_model():
             pos_rate = sum(y_cls)/len(y_cls)
             _log(f"  {day_key}: {pos_rate*100:.1f}% hit 10%+")
 
+        model_data = {"models": trained_models, "gain_models": trained_gain_models}
+
+        # Save locally
         with open(MODEL_PATH, "wb") as f:
-            pickle.dump({"models": trained_models, "gain_models": trained_gain_models}, f)
+            pickle.dump(model_data, f)
+
+        # Save to Google Drive for persistence across restarts
+        _log("Saving model to Google Drive...")
+        _save_model_to_drive(model_data)
 
         _models.update(trained_models)
         _gain_models.update(trained_gain_models)
         _model_status     = "ready"
         _model_trained_at = datetime.now().isoformat()
-        _log(f"All 3 models ready!")
+        _log(f"All 3 models ready — saved to Google Drive!")
 
     except Exception as e:
         _log(f"Training failed: {e}")

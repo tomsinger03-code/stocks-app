@@ -1083,7 +1083,7 @@ async function runScreener() {
                 return;
             }
             const tickers = window._screenerResults.map(r => r.ticker);
-            alert(`Sending ${tickers.length} screened stocks to ML scan...`);
+            // Switch to ML tab and auto-run scan
             switchTab('ml', document.querySelectorAll('.tab-btn')[3]);
             setTimeout(() => runMLScan(tickers), 300);
         }
@@ -1142,16 +1142,21 @@ loadWatchlist();
                 const progressWrap = document.getElementById('ml-progress-wrap');
 
                 if (d.status === 'ready') {
-                    el.innerHTML = `✅ Model ready · trained ${d.trained_at ? new Date(d.trained_at).toLocaleString() : 'unknown'} · click RUN ML SCAN`;
+                    el.innerHTML = `✅ Model ready · trained ${d.trained_at ? new Date(d.trained_at).toLocaleString() : 'unknown'} · send stocks from Screener to begin`;
                     if (progressWrap) progressWrap.style.display = 'none';
+                    // Clear old logs from display
+                    const logEl = document.getElementById('ml-log-tail');
+                    if (logEl) logEl.innerHTML = '';
+                    const tickerEl = document.getElementById('ml-current-ticker');
+                    if (tickerEl) tickerEl.textContent = '';
                     stopMLPolling();
 
                 } else if (d.status === 'training') {
                     const pct = p.total > 0 ? Math.round(p.current / p.total * 100) : 0;
                     const phase = p.phase === 'training' ? '🧠 Fitting model...' :
-                                  p.phase === 'fetching' ? '📡 Fetching data...' :
-                                  p.phase === 'processing' ? '⚙️ Processing...' : '⏳ Starting...';
-                    el.textContent = phase;
+                                  p.phase === 'fetching' ? '📡 Fetching historical data...' :
+                                  p.phase === 'processing' ? '⚙️ Processing patterns...' : '⏳ Starting...';
+                    el.innerHTML = `${phase} <span style="color:var(--muted);font-size:11px;">(background prep — go use the Screener while you wait)</span>`;
 
                     if (progressWrap) progressWrap.style.display = 'block';
                     const bar = document.getElementById('ml-progress-bar');
