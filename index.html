@@ -818,7 +818,10 @@
                         <div style="font-weight:800; font-size:16px;">Pick Tracker</div>
                         <div style="color:var(--muted); font-size:12px; font-family:var(--mono); margin-top:4px;">Track ML picks · enter daily prices · auto-scores outcomes</div>
                     </div>
+                    <div style="display:flex;gap:8px;">
+                    <button class="btn btn-outline" onclick="sendReport()">📧 EMAIL REPORT</button>
                     <button class="btn" onclick="checkOutcomes()">AUTO-CHECK OUTCOMES</button>
+                </div>
                 </div>
 
                 <div id="sheets-status" style="font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:12px;"></div>
@@ -1221,41 +1224,70 @@ loadWatchlist();
         }
 
         function mlRow(r, highlight) {
-            const probColor = r.mlProb >= 0.4 ? 'var(--accent)' : r.mlProb >= 0.25 ? 'var(--warn)' : 'var(--muted)';
-            const border = highlight ? 'border-color: rgba(0,229,160,0.4);' : '';
-            const news = r.news || {};
-            const newsColor = news.score > 0.1 ? 'var(--accent)' : news.score < -0.1 ? 'var(--danger)' : 'var(--muted)';
-            const newsLabel = news.score > 0.1 ? '📰+' : news.score < -0.1 ? '📰−' : news.count > 0 ? '📰' : '';
-            const headline = news.headlines && news.headlines.length ? news.headlines[0].title : '';
+            const d1 = r.day1 || {};
+            const d2 = r.day2 || {};
+            const d3 = r.day3 || {};
+            const best = r.bestDay || 3;
             const sig = r.signals || {};
-            return `
-            <div style="margin-bottom:8px; border:1px solid var(--border); ${border} border-radius:8px; overflow:hidden;">
-                <div class="mover-row" style="border:none; border-radius:0; margin:0;" onclick="loadTicker('${r.ticker}')">
-                    <div class="mover-ticker">${r.ticker}</div>
-                    <div class="mover-price">$${fmt(r.price)}<br>
-                        <span style="font-size:10px; color:${r.changePercent >= 0 ? 'var(--accent)' : 'var(--danger)'}">${r.changePercent >= 0 ? '+' : ''}${fmt(r.changePercent)}%</span>
+            const border = highlight ? 'border-color:rgba(0,229,160,0.5);' : '';
+            const cs = r.catalystScore || 0;
+            const csColor = cs >= 50 ? 'var(--accent)' : cs >= 25 ? 'var(--warn)' : 'var(--muted)';
+
+            function dayBlock(label, day, dayNum) {
+                const isBest = dayNum === best;
+                const prob = day.probPct || 0;
+                const gain = day.expectedGain || 0;
+                const col = prob >= 50 ? 'var(--accent)' : prob >= 30 ? 'var(--warn)' : 'var(--muted)';
+                return `<div style="flex:1;background:${isBest ? 'rgba(0,229,160,0.08)' : 'var(--bg)'};
+                    border:1px solid ${isBest ? 'rgba(0,229,160,0.4)' : 'var(--border)'};
+                    border-radius:6px;padding:8px;text-align:center;">
+                    <div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-bottom:4px;">
+                        ${label}${isBest ? ' 🎯' : ''}
                     </div>
+                    <div style="font-family:var(--mono);font-size:16px;font-weight:800;color:${col};">${prob}%</div>
+                    <div style="font-family:var(--mono);font-size:11px;color:${col};margin-top:2px;">
+                        ~+${gain}%
+                    </div>
+                </div>`;
+            }
+
+            const headline = (r.news && r.news.headlines && r.news.headlines.length)
+                ? r.news.headlines[0].title : '';
+
+            return `<div style="margin-bottom:10px;border:1px solid var(--border);${border}border-radius:10px;overflow:hidden;background:var(--surface);">
+                
+                <!-- Header row -->
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;cursor:pointer;" onclick="loadTicker('${r.ticker}')">
                     <div>
-                        <div class="mini-bar-wrap">
-                            <div class="mini-bar" style="width:${Math.min(r.mlProb*200,100)}%; background:${probColor};"></div>
-                        </div>
-                        <div style="font-family:var(--mono); font-size:10px; color:var(--muted); margin-top:3px;">
-                            RSI ${sig.rsi ?? '–'} · Vol ${sig.volSurge20 != null ? sig.volSurge20+'×' : '–'} · ${sig.consecDown ?? 0}d↓${sig.floatM ? ` · Float ${sig.floatM}M` : ''}
-                        </div>
-                    <div style="font-size:10px;margin-top:3px;display:flex;gap:3px;flex-wrap:wrap;">
-                        ${sig.recent8K ? '<span style=\"background:rgba(0,229,160,0.2);color:var(--accent);padding:1px 5px;border-radius:3px;font-size:9px;\">8-K</span>' : ''}
-                        ${sig.insiderBuying ? '<span style=\"background:rgba(0,229,160,0.2);color:var(--accent);padding:1px 5px;border-radius:3px;font-size:9px;\">INSIDER</span>' : ''}
-                        ${sig.squeezeCandidate ? '<span style=\"background:rgba(255,159,28,0.2);color:var(--warn);padding:1px 5px;border-radius:3px;font-size:9px;\">SQUEEZE</span>' : ''}
-                        ${sig.redditTrending ? '<span style=\"background:rgba(255,69,96,0.2);color:var(--danger);padding:1px 5px;border-radius:3px;font-size:9px;\">REDDIT🔥</span>' : ''}
+                        <span style="font-family:var(--mono);font-size:16px;font-weight:700;color:var(--accent);">${r.ticker}</span>
+                        <span style="font-family:var(--mono);font-size:13px;margin-left:10px;">$${fmt(r.price)}</span>
+                        <span style="font-size:11px;margin-left:6px;color:${r.changePercent>=0?'var(--accent)':'var(--danger)'};">${r.changePercent>=0?'+':''}${fmt(r.changePercent)}%</span>
                     </div>
-                    </div>
-                    <div style="font-family:var(--mono); font-size:18px; font-weight:800; color:${probColor}; text-align:right;">${r.mlPct}%</div>
-                    <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
-                        <div class="badge ${r.mlProb >= 0.4 ? 'badge-strong' : r.mlProb >= 0.25 ? 'badge-neutral' : 'badge-weak'}">${r.mlProb >= 0.4 ? 'STRONG' : r.mlProb >= 0.25 ? 'POSSIBLE' : 'LOW'}</div>
-                        <button class="btn btn-sm" style="padding:4px 10px;font-size:10px;width:100%;" onclick="event.stopPropagation();savePickFromML('${r.ticker}',${r.price||0},${r.mlProb||0})">💾 SAVE</button>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                        ${sig.recent8K ? '<span style="background:rgba(0,229,160,0.2);color:var(--accent);padding:2px 6px;border-radius:3px;font-size:9px;">8-K</span>' : ''}
+                        ${sig.squeezeCandidate ? '<span style="background:rgba(255,159,28,0.2);color:var(--warn);padding:2px 6px;border-radius:3px;font-size:9px;">SQUEEZE</span>' : ''}
+                        ${sig.redditTrending ? '<span style="background:rgba(255,69,96,0.2);color:var(--danger);padding:2px 6px;border-radius:3px;font-size:9px;">REDDIT🔥</span>' : ''}
+                        <button class="btn btn-sm" style="padding:5px 12px;font-size:11px;" onclick="event.stopPropagation();savePickFromML('${r.ticker}',${r.price||0},${r.mlProb||0})">💾 SAVE</button>
                     </div>
                 </div>
-                ${headline ? `<div style="padding:6px 14px 8px; font-size:11px; color:${newsColor}; border-top:1px solid var(--border); font-family:var(--mono);">${newsLabel} ${headline}</div>` : ''}
+
+                <!-- Day predictions -->
+                <div style="display:flex;gap:6px;padding:0 14px 10px;">
+                    ${dayBlock('DAY 1', d1, 1)}
+                    ${dayBlock('DAY 2', d2, 2)}
+                    ${dayBlock('DAY 3', d3, 3)}
+                </div>
+
+                <!-- Signals row -->
+                <div style="padding:6px 14px 8px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+                    <div style="font-family:var(--mono);font-size:10px;color:var(--muted);">
+                        RSI ${sig.rsi??'–'} · Vol ${sig.volSurge20??'–'}× · ${sig.consecDown??0}d↓
+                        ${sig.floatM ? ` · Float ${sig.floatM}M` : ''}
+                    </div>
+                    <div style="font-family:var(--mono);font-size:10px;color:${csColor};">Catalyst ${cs}</div>
+                </div>
+
+                ${headline ? `<div style="padding:4px 14px 8px;font-size:11px;color:var(--muted);font-family:var(--mono);">📰 ${headline}</div>` : ''}
             </div>`;
         }
 
@@ -1380,6 +1412,24 @@ loadWatchlist();
                 alert('Error: '+e.message);
             } finally {
                 btn.textContent = 'AUTO-CHECK OUTCOMES';
+                btn.disabled = false;
+            }
+        }
+
+        
+        async function sendReport() {
+            const btn = event.target;
+            btn.textContent = 'Sending...';
+            btn.disabled = true;
+            try {
+                const res = await fetch(`${API}/send-report`, {method:'POST'});
+                const d = await res.json();
+                if (d.error) alert('Error: ' + d.error);
+                else alert('✅ ' + d.message);
+            } catch(e) {
+                alert('Error: ' + e.message);
+            } finally {
+                btn.textContent = '📧 EMAIL REPORT';
                 btn.disabled = false;
             }
         }

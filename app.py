@@ -640,24 +640,73 @@ def ml_scan():
         }), 202
 
     import yfinance as yf
+    from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 
+    # Use live discovery if available, fall back to SCAN_UNIVERSE
+    try:
+        import urllib.request, json as _json
+        from datetime import date
+        scan_list = []
+
+        # Yahoo most active
+        url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=50&formatted=false"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            data = _json.loads(r.read())
+        quotes = data.get("finance",{}).get("result",[{}])[0].get("quotes",[])
+        for q in quotes:
+            t = q.get("symbol","")
+            if t and len(t) <= 5 and "." not in t:
+                scan_list.append(t)
+
+        # Add known volatile stocks
+        scan_list = list(dict.fromkeys(scan_list + SCAN_UNIVERSE))[:75]
+        print(f"ML scan: {len(scan_list)} candidates (live + known)")
+    except Exception as e:
+        print(f"Live discovery failed, using fixed list: {e}")
+        scan_list = SCAN_UNIVERSE[:50]
+    
     results = []
     errors = []
 
-    for ticker in SCAN_UNIVERSE:
+    def score_ticker(ticker):
         try:
-            hist = yf.Ticker(ticker).history(period="3mo", interval="1d", auto_adjust=True)
-            if hist is None or len(hist) < 25:
-                continue
+            # Skip leveraged ETFs
+            tl = ticker.lower()
+            if any(k in tl for k in ['2x','3x','-2x','-3x','ultra','sqqq','tqqq','spxu','uvxy']):
+                return None
 
+            # Check for reverse split
+            tk = yf.Ticker(ticker)
+            try:
+                actions = tk.actions
+                if actions is not None and not actions.empty and "Stock Splits" in actions.columns:
+                    splits = actions["Stock Splits"].tail(10)
+                    if any(0 < v < 1 for v in splits if v != 0):
+                        return None  # Skip reverse split stocks
+            except:
+                pass
+
+            hist = tk.history(period="3mo", interval="1d", auto_adjust=True)
+            if hist is None or len(hist) < 25:
+                return None
             closes  = hist["Close"].tolist()
             volumes = hist["Volume"].tolist()
             opens   = hist["Open"].tolist()
-
             prob = predict(closes, volumes, opens)
             if prob is None:
-                continue
+                return None
+            return (ticker, closes, volumes, opens, prob)
+        except:
+            return None
 
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(score_ticker, t): t for t in scan_list}
+        for future in as_completed(futures, timeout=90):
+            res = future.result()
+            if not res:
+                continue
+            ticker, closes, volumes, opens, prob = res
             # Current price and recent change
             price = closes[-1]
             change_pct = (closes[-1] - closes[-2]) / closes[-2] * 100 if len(closes) >= 2 else 0
@@ -709,6 +758,11 @@ def ml_scan():
                 "changePercent": round(change_pct, 2),
                 "mlProb": prob,
                 "mlPct": round(prob * 100, 1),
+                "day1": prediction.get("day1", {}),
+                "day2": prediction.get("day2", {}),
+                "day3": prediction.get("day3", {}),
+                "bestDay": prediction.get("bestDay", 3),
+                "bestGain": prediction.get("bestGain", 0),
                 "catalystScore": ext["catalystScore"],
                 "news": {
                     "score": news["score"],
@@ -731,12 +785,6 @@ def ml_scan():
                     "shortPct": ext["short"].get("shortPct"),
                 } if feats else {}
             })
-
-            time.sleep(0.05)
-
-        except Exception as e:
-            errors.append(f"{ticker}: {e}")
-            continue
 
     results.sort(key=lambda x: x["mlProb"], reverse=True)
 
@@ -912,6 +960,146 @@ def check_outcomes():
         all_picks = get_all_picks()
         sync_all_picks_to_sheet(all_picks)
     return jsonify({"updated": updated, "checked": len(open_picks)})
+
+
+
+@app.route('/api/discover', methods=['GET'])
+def discover_candidates():
+    """
+    Discover today's candidates dynamically from live sources.
+    Replaces the fixed SCAN_UNIVERSE for daily fresh picks.
+    """
+    try:
+        import urllib.request, urllib.parse, json as _json
+        from datetime import date, timedelta
+
+        candidates = set()
+
+        # Source 1: Yahoo Finance most active
+        try:
+            url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=50&formatted=false"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = _json.loads(r.read())
+            quotes = data.get("finance",{}).get("result",[{}])[0].get("quotes",[])
+            for q in quotes:
+                t = q.get("symbol","")
+                if t and len(t) <= 5 and "." not in t:
+                    candidates.add(t)
+            print(f"Yahoo actives: {len(candidates)}")
+        except Exception as e:
+            print(f"Yahoo error: {e}")
+
+        # Source 2: Yahoo Finance day gainers
+        try:
+            url2 = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=50&formatted=false"
+            req2 = urllib.request.Request(url2, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req2, timeout=8) as r:
+                data2 = _json.loads(r.read())
+            quotes2 = data2.get("finance",{}).get("result",[{}])[0].get("quotes",[])
+            for q in quotes2:
+                t = q.get("symbol","")
+                if t and len(t) <= 5 and "." not in t:
+                    candidates.add(t)
+            print(f"After gainers: {len(candidates)}")
+        except Exception as e:
+            print(f"Yahoo gainers error: {e}")
+
+        # Source 3: SEC 8-K filers today
+        try:
+            today = date.today().isoformat()
+            url3 = f"https://efts.sec.gov/LATEST/search-index?forms=8-K&dateRange=custom&startdt={today}&enddt={today}"
+            req3 = urllib.request.Request(url3, headers={"User-Agent": "SingerScout research@singer-scout.com"})
+            with urllib.request.urlopen(req3, timeout=8) as r:
+                data3 = _json.loads(r.read())
+            hits = data3.get("hits",{}).get("hits",[]) or []
+            for h in hits[:30]:
+                src = h.get("_source",{})
+                ticker = src.get("ticker","").upper()
+                if ticker and len(ticker) <= 5 and ticker.isalpha():
+                    candidates.add(ticker)
+            print(f"After SEC 8-K: {len(candidates)}")
+        except Exception as e:
+            print(f"SEC error: {e}")
+
+        # Always include known volatile stocks
+        candidates.update(SCAN_UNIVERSE)
+
+        return jsonify({
+            "candidates": list(candidates),
+            "count": len(candidates),
+            "timestamp": datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e), "candidates": SCAN_UNIVERSE}), 500
+
+
+
+@app.route('/api/send-report', methods=['POST'])
+def send_report():
+    """Manually trigger email report."""
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+
+        gmail_password = os.getenv("GMAIL_APP_PASSWORD")
+        gmail_from     = os.getenv("GMAIL_FROM", "tomsinger03@gmail.com")
+        gmail_to       = os.getenv("GMAIL_TO", "tomsinger03@gmail.com")
+
+        if not gmail_password:
+            return jsonify({"error": "GMAIL_APP_PASSWORD not set in environment"}), 400
+
+        # Get latest picks from DB
+        picks = get_all_picks()
+        open_picks = [p for p in picks if not p.get("outcome")][:5]
+
+        today_str = datetime.now().strftime("%A %d %B %Y")
+        subject = f"Singer Scout Report — {today_str}"
+
+        picks_html = ""
+        for p in open_picks:
+            picks_html += f"""
+            <div style="background:#1a2030;border:1px solid #242d3d;border-radius:8px;padding:12px;margin-bottom:10px;">
+                <span style="font-size:18px;font-weight:800;color:#00e5a0;font-family:monospace;">{p['ticker']}</span>
+                <span style="font-size:14px;margin-left:10px;font-family:monospace;">${p.get('entry_price','–')}</span>
+                <span style="font-size:12px;margin-left:8px;color:#ff9f1c;font-family:monospace;">ML: {round((p.get('ml_prob') or 0)*100)}%</span>
+                <div style="font-size:11px;color:#64748b;margin-top:6px;font-family:monospace;">
+                    Target: +{p.get('predicted_gain_pct',15)}% in {p.get('predicted_days',3)} days · Added {p.get('pick_date','')}
+                </div>
+                <div style="font-size:12px;color:{'#00e5a0' if p.get('outcome')=='WIN' else '#ff4560' if p.get('outcome')=='LOSS' else '#ff9f1c'};margin-top:4px;font-family:monospace;">
+                    {p.get('outcome','OPEN')} {f"(+{p.get('actual_gain_pct')}%)" if p.get('actual_gain_pct') else ''}
+                </div>
+            </div>"""
+
+        html = f"""
+        <div style="background:#0b0e13;color:#e2e8f0;font-family:sans-serif;padding:20px;max-width:600px;">
+            <div style="font-size:24px;font-weight:800;color:#00e5a0;margin-bottom:16px;">SINGER SCOUT</div>
+            <div style="font-size:12px;color:#64748b;font-family:monospace;margin-bottom:20px;">{today_str}</div>
+            <div style="font-size:13px;font-weight:700;color:#64748b;margin-bottom:10px;">OPEN PICKS</div>
+            {picks_html if picks_html else '<div style="color:#64748b;font-family:monospace;">No open picks.</div>'}
+            <div style="margin-top:20px;">
+                <a href="https://stocks-app-ojo2.onrender.com" style="background:#00e5a0;color:#000;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:700;">
+                    Open Singer Scout →
+                </a>
+            </div>
+        </div>"""
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = gmail_from
+        msg["To"]      = gmail_to
+        msg.attach(MIMEText(html, "html"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(gmail_from, gmail_password)
+            server.sendmail(gmail_from, gmail_to, msg.as_string())
+
+        return jsonify({"message": f"Report sent to {gmail_to}"})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == '__main__':

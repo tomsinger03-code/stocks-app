@@ -1,0 +1,33 @@
+name: Singer Scout Daily Scan
+
+on:
+  schedule:
+    # 9:00am ET = 14:00 UTC (2pm UK time)
+    - cron: '0 14 * * 1-5'  # Monday-Friday only
+  workflow_dispatch:  # Allow manual trigger from GitHub
+
+jobs:
+  daily-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install yfinance requests python-dotenv scikit-learn numpy pandas
+
+      - name: Run daily scan and send email
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GMAIL_FROM: ${{ secrets.GMAIL_FROM }}
+          GMAIL_TO: ${{ secrets.GMAIL_TO }}
+        run: |
+          python daily_scan.py
