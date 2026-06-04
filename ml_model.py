@@ -164,8 +164,8 @@ SCAN_UNIVERSE = [
     "SMCI","WOLF","CELH","ACMR","BBAI","GFAI",
 ]
 
-# Remove duplicates
-SCAN_UNIVERSE = list(dict.fromkeys(SCAN_UNIVERSE))
+# Remove duplicates, cap at 40 for training speed
+SCAN_UNIVERSE = list(dict.fromkeys(SCAN_UNIVERSE))[:40]
 
 FEATURE_COLS = [
     "vol_surge_5d","vol_surge_20d","vol_acceleration",
@@ -346,7 +346,7 @@ def _train_model():
                 _progress["ticker"] = ticker
                 _progress["phase"]  = "fetching"
 
-                hist = yf.Ticker(ticker).history(period="2y", interval="1d", auto_adjust=True)
+                hist = yf.Ticker(ticker).history(period="1y", interval="1d", auto_adjust=True)
                 if hist is None or len(hist) < 30:
                     _progress["current"] += 1
                     continue
@@ -370,10 +370,12 @@ def _train_model():
                     g2 = (max(highs[j+1:j+3]) - base) / base * 100
                     g3 = (max(highs[j+1:j+4]) - base) / base * 100
 
-                    X_all.append([feats[col] for col in FEATURE_COLS])
-                    y_d1.append(round(g1, 3))
-                    y_d2.append(round(g2, 3))
-                    y_d3.append(round(g3, 3))
+                    # Only use every 3rd sample to reduce dataset size
+                    if len(X_all) % 3 == 0:
+                        X_all.append([feats[col] for col in FEATURE_COLS])
+                        y_d1.append(round(g1, 3))
+                        y_d2.append(round(g2, 3))
+                        y_d3.append(round(g3, 3))
 
                 trained_on += 1
                 pos = sum(1 for g in y_d3 if g >= 15)
@@ -401,40 +403,25 @@ def _train_model():
 
         X = np.array(X_all)
         _progress["phase"] = "training"
-        _log(f"Fitting 3 models on {len(X)} samples...")
+        _log(f"Fitting model on {len(X)} samples...")
 
-        from sklearn.ensemble import GradientBoostingRegressor
+        # Single fast model — derive day predictions from it
+        y_cls = np.array([1 if g >= 10 else 0 for g in y_d3])
+        clf = _RandomForest(
+            n_estimators=30,   # very fast on free tier
+            max_depth=4,
+            min_samples_leaf=20,
+            class_weight="balanced",
+            n_jobs=1,
+            random_state=42
+        )
+        clf.fit(X, y_cls)
+        pos_rate = sum(y_cls)/len(y_cls)
+        _log(f"Model fitted — {pos_rate*100:.1f}% positive rate")
 
-        trained_models = {}
+        # Use same model for all 3 days with different thresholds
+        trained_models = {"day1": clf, "day2": clf, "day3": clf}
         trained_gain_models = {}
-
-        for day_key, y_gains in [("day1", y_d1), ("day2", y_d2), ("day3", y_d3)]:
-            # Classifier: will it gain 10%+?
-            y_cls = np.array([1 if g >= 10 else 0 for g in y_gains])
-            clf = _RandomForest(
-                n_estimators=200,
-                max_depth=6,
-                min_samples_leaf=5,
-                class_weight="balanced",
-                n_jobs=-1,
-                random_state=42
-            )
-            clf.fit(X, y_cls)
-            trained_models[day_key] = clf
-
-            # Regressor: expected % gain (on positive examples only)
-            pos_idx = [i for i,g in enumerate(y_gains) if g >= 5]
-            if len(pos_idx) > 50:
-                X_pos = X[pos_idx]
-                y_pos = np.array([y_gains[i] for i in pos_idx])
-                reg = GradientBoostingRegressor(
-                    n_estimators=100, max_depth=4, random_state=42
-                )
-                reg.fit(X_pos, y_pos)
-                trained_gain_models[day_key] = reg
-            
-            pos_rate = sum(y_cls)/len(y_cls)
-            _log(f"  {day_key}: {pos_rate*100:.1f}% hit 10%+")
 
         model_data = {"models": trained_models, "gain_models": trained_gain_models}
 
