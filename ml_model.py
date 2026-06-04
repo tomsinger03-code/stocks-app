@@ -43,47 +43,27 @@ def _load_sklearn():
         _RandomForest = RandomForestClassifier
         _sklearn_loaded = True
 
-# ── Universe: small/micro cap liquid stocks where big moves happen ──
-# Mix of known volatile names + sectors that produce explosive moves
+# ── Universe: curated 50 high-volatility small/micro caps ──
+# These are proven movers — updated from real winner lists
 SCAN_UNIVERSE = [
-    # Biotech/Health tech (FDA catalysts, volatile)
-    "SIGA","NVAX","OCGN","CLOV","FFIE","IDEANOMICS","MMAT","CENN","MULN",
-    "NKLA","WKHS","GOEV","RIDE","SOLO","XPEV","LI","NIO",
-    "ATOS","BBAI","GFAI","INPX","IMPP","EDBL","DRUG","BURU",
-    "PHAT","SHOT","MAPS","GRPN","COMS","ENVB","AEYE","CNEY",
-    "HUDI","JFIN","PFIS","NXPL","CJET","AIXI","ZJYL","BJDX",
-    "ABTS","SBFM","RKTO","LASE","FOFO","SWMR","BBGI","PUSA",
-    # Small cap tech/commercial
-    "SOPA","CODA","MFON","XBRT","GMGI","AWIN","ITRG","BSFC",
-    "GSUN","BTOG","LIQT","VERB","TNXP","GREE","MARA","RIOT",
-    "CLSK","HUT","BTBT","CIFR","SDIG","IREN","CORZ","WULF",
-    # Micro cap industrial/services
-    "DXST","STAK","JLHL","WTF","FOFO",
-    # ETFs for calibration
-    "SOXS","SQQQ","TQQQ","SPXU","UVXY",
-    # Mid cap growth (still volatile)
-    "PLTR","HOOD","SOFI","AFRM","UPST","OPEN","LMND","ROOT",
-    "CLOV","WISH","BARK","OPAD","SPIR","ATIP","BMBL","BIRD",
-    "RBLX","DKNG","PENN","ACMR","IONQ","QUBT","RGTI",
-    "LAZR","MVIS","OUST","LIDR","VLDR","HYLN","NKLA",
-    # Today's winners added
-    "CXAI","TWAV","HCAT","WXM","SBFM","AVOS","SAVG",
-    # New winners 03/06
-    "STI","VERU","FOXX","EDHL","INDP","SPRC","LNZA","LSE","ROLR","MNTS","BNAI","ASTI",
-    "BJDX","LASE","DXST","STAK","RKTO","ZJYL","JLHL","SWMR","FOFO","PUSA","ABTS",
-    "SMCI","WOLF","CELH","NKTR","FATE","CRSP","EDIT","NTLA",
-    "BEAM","PACB","VERV","TELA","RCKT","RETA","IRON","PRLD",
-    # More small caps with history of big moves
-    "CGEN","DARE","APRE","PDSB","MRKR","TALS","NRXP","SABS",
-    "ILUS","NXXT","LPCN","ENTX","BHAT","HUDI","ATHE","CNET",
-    "BIMI","SFUN","RETO","TOUR","CIFS","CLPS","AIFU","TAOP",
+    # Proven big movers from real data
+    "BJDX","LASE","DXST","STAK","RKTO","ZJYL","SWMR","FOFO","PUSA","ABTS",
+    "SBFM","STI","VERU","FOXX","EDHL","TWAV","INDP","WXM","SPRC","LNZA",
+    "LSE","ROLR","MNTS","BNAI","ASTI","CXAI","HCAT",
+    # Crypto/high vol
+    "MARA","RIOT","CLSK","HUT","BTBT","CIFR","IREN","WULF",
+    # Biotech volatile
+    "NVAX","OCGN","NKTR","FATE","CRSP","SIGA","ATOS",
+    # Small cap growth
+    "PLTR","HOOD","SOFI","AFRM","UPST","IONQ","QUBT","RGTI",
+    # Chinese ADRs (very volatile)
+    "NIO","XPEV","LI","JFU","HUDI","JFIN",
+    # Recent additions
+    "SMCI","WOLF","CELH","ACMR","BBAI","GFAI",
 ]
-# Remove duplicates and exclude leveraged ETFs
-_ETF_EXCLUDE = ['2x','3x','-2x','-3x','ultra','leverage']
-SCAN_UNIVERSE = list(dict.fromkeys([
-    t for t in SCAN_UNIVERSE
-    if not any(k in t.lower() for k in _ETF_EXCLUDE)
-]))
+
+# Remove duplicates
+SCAN_UNIVERSE = list(dict.fromkeys(SCAN_UNIVERSE))
 
 FEATURE_COLS = [
     "vol_surge_5d","vol_surge_20d","vol_acceleration",
@@ -169,8 +149,9 @@ def extract_features(closes, volumes, highs=None, lows=None):
         "consec_down":     consec_down,
     }
 
-# ── Model state ──
-_model      = None
+# ── Model state — 3 models, one per timeframe ──
+_models = {"day1": None, "day2": None, "day3": None}
+_gain_models = {"day1": None, "day2": None, "day3": None}  # predict expected gain
 _model_lock = threading.Lock()
 _model_status      = "untrained"
 _model_trained_at  = None
@@ -219,23 +200,32 @@ def _train_model():
             if age < 86400:
                 _log("Loading cached model...")
                 with open(MODEL_PATH, "rb") as f:
-                    _model = pickle.load(f)
+                    saved = pickle.load(f)
+                if isinstance(saved, dict) and "models" in saved:
+                    _models.update(saved["models"])
+                    _gain_models.update(saved.get("gain_models", {}))
+                else:
+                    # Old format - skip and retrain
+                    _log("Old model format - retraining...")
+                    import os; os.remove(MODEL_PATH)
                 _model_status     = "ready"
                 _model_trained_at = datetime.now().isoformat()
                 _log("Cached model loaded OK")
                 return
 
         total = len(SCAN_UNIVERSE)
-        _log(f"Training on {total} small/micro cap stocks...")
-        _log("Target: 15%+ gain within 3 trading days")
+        _log(f"Training on {total} stocks — 3 separate day models...")
+        _log("Predicts: most likely % gain for Day 1, Day 2, Day 3 separately")
 
         _progress.update({"total": total, "current": 0, "phase": "fetching",
                           "samples": 0, "positives": 0, "pct": 0.0, "ticker": ""})
 
-        X, y = [], []
-        trained_on  = 0
-        TARGET_GAIN = 0.15
-        FWD_DAYS    = 3
+        # Separate training data for each day
+        X_all = []
+        y_d1 = []  # actual % gain day 1
+        y_d2 = []  # actual % gain day 2
+        y_d3 = []  # actual % gain day 3
+        trained_on = 0
 
         for ticker in SCAN_UNIVERSE:
             try:
@@ -252,28 +242,37 @@ def _train_model():
                 highs   = hist["High"].tolist()
 
                 _progress["phase"] = "processing"
-                for j in range(25, len(closes) - FWD_DAYS):
+                for j in range(25, len(closes) - 3):
                     feats = extract_features(closes[:j+1], volumes[:j+1])
                     if feats is None:
                         continue
-                    future_high  = max(highs[j+1:j+1+FWD_DAYS])
-                    gain         = (future_high - closes[j]) / closes[j] if closes[j] > 0 else 0
-                    label        = 1 if gain >= TARGET_GAIN else 0
-                    X.append([feats[col] for col in FEATURE_COLS])
-                    y.append(label)
+
+                    base = closes[j]
+                    if base <= 0:
+                        continue
+
+                    # Actual % gain using high of each day
+                    g1 = (highs[j+1] - base) / base * 100
+                    g2 = (max(highs[j+1:j+3]) - base) / base * 100
+                    g3 = (max(highs[j+1:j+4]) - base) / base * 100
+
+                    X_all.append([feats[col] for col in FEATURE_COLS])
+                    y_d1.append(round(g1, 3))
+                    y_d2.append(round(g2, 3))
+                    y_d3.append(round(g3, 3))
 
                 trained_on += 1
-                pos = sum(y)
-                pct = 100*pos/len(y) if y else 0
+                pos = sum(1 for g in y_d3 if g >= 15)
+                pct = 100*pos/len(y_d3) if y_d3 else 0
                 _progress.update({
                     "current":   trained_on,
-                    "samples":   len(X),
+                    "samples":   len(X_all),
                     "positives": pos,
                     "pct":       round(pct, 1),
                     "ticker":    ticker,
                 })
                 if trained_on % 10 == 0:
-                    _log(f"  {trained_on}/{total} — {len(X)} samples, {pos} positives ({pct:.1f}%)")
+                    _log(f"  {trained_on}/{total} — {len(X_all)} samples, {pos} with 15%+ by day3 ({pct:.1f}%)")
                 time.sleep(0.15)
 
             except Exception as e:
@@ -281,37 +280,56 @@ def _train_model():
                 _progress["current"] = _progress.get("current", 0) + 1
                 continue
 
-        if len(X) < 50:
+        if len(X_all) < 50:
             _log("Not enough data to train")
             _model_status = "failed"
             return
 
-        X = np.array(X)
-        y = np.array(y)
-        pos_rate = sum(y)/len(y)
+        X = np.array(X_all)
         _progress["phase"] = "training"
-        _log(f"Fitting on {len(X)} samples — {100*pos_rate:.1f}% positive rate")
+        _log(f"Fitting 3 models on {len(X)} samples...")
 
-        clf = _RandomForest(
-            n_estimators=300,
-            max_depth=6,
-            min_samples_leaf=5,
-            class_weight="balanced",
-            n_jobs=-1,
-            random_state=42
-        )
-        clf.fit(X, y)
+        from sklearn.ensemble import GradientBoostingRegressor
+
+        trained_models = {}
+        trained_gain_models = {}
+
+        for day_key, y_gains in [("day1", y_d1), ("day2", y_d2), ("day3", y_d3)]:
+            # Classifier: will it gain 10%+?
+            y_cls = np.array([1 if g >= 10 else 0 for g in y_gains])
+            clf = _RandomForest(
+                n_estimators=200,
+                max_depth=6,
+                min_samples_leaf=5,
+                class_weight="balanced",
+                n_jobs=-1,
+                random_state=42
+            )
+            clf.fit(X, y_cls)
+            trained_models[day_key] = clf
+
+            # Regressor: expected % gain (on positive examples only)
+            pos_idx = [i for i,g in enumerate(y_gains) if g >= 5]
+            if len(pos_idx) > 50:
+                X_pos = X[pos_idx]
+                y_pos = np.array([y_gains[i] for i in pos_idx])
+                reg = GradientBoostingRegressor(
+                    n_estimators=100, max_depth=4, random_state=42
+                )
+                reg.fit(X_pos, y_pos)
+                trained_gain_models[day_key] = reg
+            
+            pos_rate = sum(y_cls)/len(y_cls)
+            _log(f"  {day_key}: {pos_rate*100:.1f}% hit 10%+")
 
         with open(MODEL_PATH, "wb") as f:
-            pickle.dump(clf, f)
+            pickle.dump({"models": trained_models, "gain_models": trained_gain_models}, f)
 
-        _model            = clf
+        _models.update(trained_models)
+        _gain_models.update(trained_gain_models)
         _model_status     = "ready"
         _model_trained_at = datetime.now().isoformat()
-
-        importances = sorted(zip(FEATURE_COLS, clf.feature_importances_), key=lambda x: -x[1])
-        _log("Feature importance: " + ", ".join(f"{k}={v:.3f}" for k,v in importances[:5]))
-        _log(f"Done! Model ready.")
+        _log(f"All 3 models ready!")
 
     except Exception as e:
         _log(f"Training failed: {e}")
@@ -320,14 +338,61 @@ def _train_model():
 
 
 def predict(closes, volumes, opens=None):
-    if _model is None or _model_status != "ready":
+    """
+    Returns dict with Day 1/2/3 predictions:
+    {
+        day1: {prob: 0.34, expectedGain: 8.2},
+        day2: {prob: 0.58, expectedGain: 15.1},
+        day3: {prob: 0.71, expectedGain: 22.4},
+        bestDay: 3,
+        bestProb: 0.71,
+        bestGain: 22.4
+    }
+    """
+    if _model_status != "ready" or not _models.get("day1"):
         return None
     feats = extract_features(closes, volumes)
     if feats is None:
         return None
-    X      = np.array([[feats[col] for col in FEATURE_COLS]])
-    prob   = _model.predict_proba(X)[0]
-    classes = list(_model.classes_)
-    if 1 in classes:
-        return round(float(prob[classes.index(1)]), 4)
-    return None
+
+    X = np.array([[feats[col] for col in FEATURE_COLS]])
+    result = {}
+
+    for day_key in ["day1", "day2", "day3"]:
+        clf = _models.get(day_key)
+        if clf is None:
+            result[day_key] = {"prob": 0, "expectedGain": 0}
+            continue
+
+        classes = list(clf.classes_)
+        proba = clf.predict_proba(X)[0]
+        prob = float(proba[classes.index(1)]) if 1 in classes else 0
+
+        # Expected gain from regressor
+        reg = _gain_models.get(day_key)
+        expected_gain = 0
+        if reg and prob > 0.2:
+            try:
+                expected_gain = float(reg.predict(X)[0])
+                expected_gain = max(0, round(expected_gain, 1))
+            except:
+                expected_gain = 0
+
+        result[day_key] = {
+            "prob": round(prob, 4),
+            "probPct": round(prob * 100, 1),
+            "expectedGain": expected_gain
+        }
+
+    # Find best day (highest probability)
+    best = max(result.items(), key=lambda x: x[1]["prob"])
+    result["bestDay"] = int(best[0].replace("day",""))
+    result["bestProb"] = best[1]["prob"]
+    result["bestProbPct"] = best[1]["probPct"]
+    result["bestGain"] = best[1]["expectedGain"]
+
+    # Legacy field for backwards compat
+    result["mlProb"] = best[1]["prob"]
+    result["mlPct"] = best[1]["probPct"]
+
+    return result

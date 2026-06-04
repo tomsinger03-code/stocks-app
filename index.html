@@ -730,13 +730,13 @@
                             Random Forest model trained on 2yr history · ~300 stocks
                         </div>
                     </div>
-                    <button class="btn" onclick="runMLScan()">RUN ML SCAN</button>
+                    <button class="btn" id="btn-run-ml" onclick="runMLScan()">RUN ML SCAN</button>
                 </div>
 
                 <div id="ml-status-bar" style="background:rgba(61,142,255,0.08); border:1px solid rgba(61,142,255,0.25); border-radius:8px; padding:16px; font-family:var(--mono); font-size:12px; margin-bottom:16px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                         <span id="ml-status-text">Checking model status...</span>
-                        <button class="btn btn-outline btn-sm" onclick="checkMLStatus()">↻ Refresh</button>
+                        
                     </div>
                     <div id="ml-progress-wrap" style="display:none;">
                         <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
@@ -776,7 +776,7 @@
             <div id="tab-screener" class="tab-panel">
                 <div style="margin-bottom:16px;">
                     <div style="font-weight:800; font-size:16px; margin-bottom:4px;">Pre-Explosion Screener</div>
-                    <div style="color:var(--muted); font-size:12px; font-family:var(--mono);">Finds stocks building to a spike — feeds into ML Predictor</div>
+                    <div style="color:var(--muted); font-size:12px; font-family:var(--mono);">Live scan — pulls today's active stocks from Yahoo &amp; SEC, then filters</div>
                 </div>
                 <div class="screener-form" style="grid-template-columns:repeat(3,1fr) auto; margin-bottom:16px;">
                     <div class="form-field">
@@ -789,22 +789,22 @@
                     </div>
                     <div class="form-field">
                         <label>Min Vol Surge</label>
-                        <input type="number" id="f-vol-surge" value="3" step="0.5">
+                        <input type="number" id="f-vol-surge" value="2" step="0.5">
                     </div>
                     <button class="btn" onclick="runScreener()">SCREEN</button>
                 </div>
                 <div class="screener-form" style="grid-template-columns:repeat(3,1fr) auto; margin-bottom:16px;">
                     <div class="form-field">
                         <label>Max RSI</label>
-                        <input type="number" id="f-max-rsi" value="65" step="1">
+                        <input type="number" id="f-max-rsi" value="70" step="1">
                     </div>
                     <div class="form-field">
                         <label>Max % Above 52w Low</label>
-                        <input type="number" id="f-near-low" value="150" step="10">
+                        <input type="number" id="f-near-low" value="300" step="10">
                     </div>
                     <div class="form-field">
                         <label>Min Down Days</label>
-                        <input type="number" id="f-consec-down" value="2" step="1">
+                        <input type="number" id="f-consec-down" value="0" step="1">
                     </div>
                     <button class="btn btn-outline" onclick="sendScreenerToML()" id="btn-send-ml" style="display:none">SEND TO ML →</button>
                 </div>
@@ -1067,10 +1067,14 @@ async function runScreener() {
         }
 
         function sendScreenerToML() {
-            if (!window._screenerResults || !window._screenerResults.length) return;
-            window._mlUniverse = window._screenerResults.map(r => r.ticker);
+            if (!window._screenerResults || !window._screenerResults.length) {
+                alert('Run the screener first to get candidates.');
+                return;
+            }
+            const tickers = window._screenerResults.map(r => r.ticker);
+            alert(`Sending ${tickers.length} screened stocks to ML scan...`);
             switchTab('ml', document.querySelectorAll('.tab-btn')[3]);
-            setTimeout(runMLScan, 300);
+            setTimeout(() => runMLScan(tickers), 300);
         }
 
 // ── Watchlist ──
@@ -1127,7 +1131,7 @@ loadWatchlist();
                 const progressWrap = document.getElementById('ml-progress-wrap');
 
                 if (d.status === 'ready') {
-                    el.innerHTML = `✅ Model ready · trained ${d.trained_at ? new Date(d.trained_at).toLocaleString() : 'unknown'}`;
+                    el.innerHTML = `✅ Model ready · trained ${d.trained_at ? new Date(d.trained_at).toLocaleString() : 'unknown'} · click RUN ML SCAN`;
                     if (progressWrap) progressWrap.style.display = 'none';
                     stopMLPolling();
 
@@ -1186,11 +1190,14 @@ loadWatchlist();
             if (_mlPollTimer) { clearInterval(_mlPollTimer); _mlPollTimer = null; }
         }
 
-        async function runMLScan() {
+        async function runMLScan(tickerOverride) {
             const resultsEl = document.getElementById('ml-results');
             resultsEl.innerHTML = '<div class="loading"><span>●</span>&nbsp; Running ML scan across ~300 stocks… this takes 1-2 minutes</div>';
             try {
-                const res = await fetch(`${API}/ml/scan`);
+                const url = tickerOverride && tickerOverride.length
+                    ? `${API}/ml/scan?tickers=${tickerOverride.join(',')}`
+                    : `${API}/ml/scan`;
+                const res = await fetch(url);
                 const d = await res.json();
                 if (!res.ok || d.error) {
                     if (d.status === 'training') {

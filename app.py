@@ -472,25 +472,78 @@ def get_movers():
 @app.route('/api/screener', methods=['POST'])
 def screener():
     """
-    Smart screener — finds stocks ABOUT to spike.
-    Uses threading for speed. Excludes leveraged ETFs.
+    Smart screener — fetches live candidates from Yahoo/SEC then filters them.
+    Universe is fresh every scan — not a fixed list.
     """
     try:
         import yfinance as yf
+        import urllib.request as _ur, json as _j
         from ml_model import SCAN_UNIVERSE, extract_features
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         criteria = request.json or {}
         min_price       = float(criteria.get('minPrice', 1))
         max_price       = float(criteria.get('maxPrice', 15))
-        min_vol_surge   = float(criteria.get('minVolSurge', 3.0))
-        max_rsi         = float(criteria.get('maxRsi', 65))
-        min_consec_down = int(criteria.get('minConsecDown', 2))
-        near_low_pct    = float(criteria.get('nearLowPct', 150))
+        min_vol_surge   = float(criteria.get('minVolSurge', 2.0))
+        max_rsi         = float(criteria.get('maxRsi', 70))
+        min_consec_down = int(criteria.get('minConsecDown', 0))
+        near_low_pct    = float(criteria.get('nearLowPct', 300))
 
-        # Leveraged ETF keywords to exclude
         EXCLUDE_KEYWORDS = ['2x','3x','-2x','-3x','ultra','leverage','leveraged',
                             'proshares','direxion','2xl','3xl']
+
+        # ── Build live universe ──────────────────────────────
+        live_tickers = set()
+
+        # Source 1: Yahoo most active
+        try:
+            url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=100&formatted=false"
+            req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with _ur.urlopen(req, timeout=8) as r:
+                data = _j.loads(r.read())
+            for q in data.get("finance",{}).get("result",[{}])[0].get("quotes",[]):
+                t = q.get("symbol","")
+                if t and len(t) <= 5 and "." not in t:
+                    live_tickers.add(t)
+            print(f"Yahoo most active: {len(live_tickers)}")
+        except Exception as e:
+            print(f"Yahoo most active error: {e}")
+
+        # Source 2: Yahoo day gainers
+        try:
+            url2 = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=100&formatted=false"
+            req2 = _ur.Request(url2, headers={"User-Agent": "Mozilla/5.0"})
+            with _ur.urlopen(req2, timeout=8) as r2:
+                data2 = _j.loads(r2.read())
+            for q in data2.get("finance",{}).get("result",[{}])[0].get("quotes",[]):
+                t = q.get("symbol","")
+                if t and len(t) <= 5 and "." not in t:
+                    live_tickers.add(t)
+            print(f"After day gainers: {len(live_tickers)}")
+        except Exception as e:
+            print(f"Yahoo gainers error: {e}")
+
+        # Source 3: SEC 8-K filers today
+        try:
+            from datetime import date as _date
+            today = _date.today().isoformat()
+            url3 = f"https://efts.sec.gov/LATEST/search-index?forms=8-K&dateRange=custom&startdt={today}&enddt={today}"
+            req3 = _ur.Request(url3, headers={"User-Agent": "SingerScout research@singer-scout.com"})
+            with _ur.urlopen(req3, timeout=8) as r3:
+                data3 = _j.loads(r3.read())
+            for h in data3.get("hits",{}).get("hits",[]) or []:
+                t = h.get("_source",{}).get("ticker","").upper()
+                if t and len(t) <= 5 and t.isalpha():
+                    live_tickers.add(t)
+            print(f"After SEC 8-K: {len(live_tickers)}")
+        except Exception as e:
+            print(f"SEC error: {e}")
+
+        # Always add known volatile stocks as backup
+        live_tickers.update(SCAN_UNIVERSE)
+
+        universe = list(live_tickers)
+        print(f"Total universe for screening: {len(universe)}")
 
         results = []
         skipped = []
@@ -566,7 +619,7 @@ def screener():
 
         # Run in parallel — much faster than sequential
         with ThreadPoolExecutor(max_workers=8) as executor:
-            futures = {executor.submit(check_ticker, t): t for t in SCAN_UNIVERSE}
+            futures = {executor.submit(check_ticker, t): t for t in universe}
             for future in as_completed(futures):
                 result = future.result()
                 if result:
@@ -578,7 +631,7 @@ def screener():
         return jsonify({
             "results": results,
             "passed": len(results),
-            "scanned": len(SCAN_UNIVERSE),
+            "scanned": len(universe),
             "filters_applied": criteria,
         })
 
@@ -628,8 +681,8 @@ def ml_status():
 @app.route('/api/ml/scan', methods=['GET'])
 def ml_scan():
     """
-    Score all stocks in the universe by ML probability of 15%+ gain in 3 days.
-    Returns sorted list. Model must be trained first (/api/ml/status to check).
+    Score stocks by ML probability. Accepts optional ?tickers= param
+    from screener to scan only filtered candidates.
     """
     status = get_status()
     if status["status"] != "ready":
@@ -642,29 +695,34 @@ def ml_scan():
     import yfinance as yf
     from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 
-    # Use live discovery if available, fall back to SCAN_UNIVERSE
-    try:
-        import urllib.request, json as _json
-        from datetime import date
+    # Check if screener passed specific tickers
+    custom_tickers = request.args.get('tickers', '')
+    if custom_tickers:
+        scan_list = [t.strip().upper() for t in custom_tickers.split(',') if t.strip()]
+        print(f"ML scan: using {len(scan_list)} screener-filtered tickers")
+    else:
+        # Use live discovery if available, fall back to SCAN_UNIVERSE
         scan_list = []
 
-        # Yahoo most active
-        url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=50&formatted=false"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=6) as r:
-            data = _json.loads(r.read())
-        quotes = data.get("finance",{}).get("result",[{}])[0].get("quotes",[])
-        for q in quotes:
-            t = q.get("symbol","")
-            if t and len(t) <= 5 and "." not in t:
-                scan_list.append(t)
-
-        # Add known volatile stocks
-        scan_list = list(dict.fromkeys(scan_list + SCAN_UNIVERSE))[:75]
-        print(f"ML scan: {len(scan_list)} candidates (live + known)")
-    except Exception as e:
-        print(f"Live discovery failed, using fixed list: {e}")
-        scan_list = SCAN_UNIVERSE[:50]
+    if not scan_list:
+        try:
+            import urllib.request as _ur2, json as _json2
+            url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=50&formatted=false"
+            req = _ur2.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with _ur2.urlopen(req, timeout=6) as r:
+                data = _json2.loads(r.read())
+            quotes = data.get("finance",{}).get("result",[{}])[0].get("quotes",[])
+            for q in quotes:
+                t = q.get("symbol","")
+                if t and len(t) <= 5 and "." not in t:
+                    scan_list.append(t)
+            scan_list = list(dict.fromkeys(scan_list + SCAN_UNIVERSE))[:75]
+            print(f"ML scan: {len(scan_list)} live+known candidates")
+        except Exception as e:
+            print(f"Live discovery failed: {e}")
+        if not scan_list:
+            scan_list = SCAN_UNIVERSE[:50]
+            scan_list = SCAN_UNIVERSE[:50]
     
     results = []
     errors = []
