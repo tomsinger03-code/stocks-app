@@ -558,6 +558,70 @@
             .mover-row { grid-template-columns: 60px 70px 1fr 70px; }
             .mover-row .badge { display: none; }
         }
+
+        /* ── Mobile optimisation ── */
+        @media (max-width: 768px) {
+            .app { padding: 12px 10px; }
+
+            header { margin-bottom: 16px; padding-bottom: 12px; }
+            .logo-title { font-size: 20px; }
+            .logo-sub { display: none; }
+
+            /* Compact tabs */
+            .tabs { margin-bottom: 12px; overflow-x: auto; white-space: nowrap; }
+            .tab-btn { padding: 8px 12px; font-size: 11px; }
+
+            /* Full width on mobile */
+            .grid-layout { grid-template-columns: 1fr; }
+
+            /* Hide watchlist sidebar on mobile - show as collapsible */
+            .grid-layout > div:last-child { display: none; }
+
+            /* Compact mover rows */
+            .mover-row {
+                grid-template-columns: 55px 65px 1fr 50px 70px;
+                gap: 6px;
+                padding: 10px 10px;
+            }
+            .mover-ticker { font-size: 12px; }
+            .mover-price { font-size: 11px; }
+
+            /* Compact stock hero */
+            .stock-ticker { font-size: 24px; }
+            .price-value { font-size: 22px; }
+
+            /* Compact momentum block */
+            .momentum-block { gap: 12px; padding: 12px; }
+            .score-circle { width: 64px; height: 64px; }
+            .score-num { font-size: 20px; }
+
+            /* Signals 1 col on mobile */
+            .signals-grid { grid-template-columns: 1fr; gap: 6px; }
+
+            /* Stats 2 col */
+            .stats-grid { grid-template-columns: 1fr 1fr; gap: 6px; }
+
+            /* Screener form stack on mobile */
+            .screener-form { grid-template-columns: 1fr 1fr !important; gap: 8px; }
+
+            /* ML rows more compact */
+            .mover-row > div:nth-child(3) { display: none; }
+
+            /* Tracker table scroll */
+            #tracker-list { overflow-x: auto; }
+            #tracker-stats { grid-template-columns: 1fr 1fr; }
+
+            /* Progress bar compact */
+            #ml-progress-wrap > div:last-child { display: none; }
+
+            /* Bigger tap targets */
+            .btn { min-height: 40px; }
+            .btn-sm { min-height: 32px; padding: 6px 12px; }
+
+            /* Card padding */
+            .card { padding: 14px; }
+        }
+
     </style>
 </head>
 <body>
@@ -721,26 +785,26 @@
                     </div>
                     <div class="form-field">
                         <label>Max Price $</label>
-                        <input type="number" id="f-max-price" value="30" step="1">
+                        <input type="number" id="f-max-price" value="15" step="1">
                     </div>
                     <div class="form-field">
                         <label>Min Vol Surge</label>
-                        <input type="number" id="f-vol-surge" value="2" step="0.5">
+                        <input type="number" id="f-vol-surge" value="3" step="0.5">
                     </div>
                     <button class="btn" onclick="runScreener()">SCREEN</button>
                 </div>
                 <div class="screener-form" style="grid-template-columns:repeat(3,1fr) auto; margin-bottom:16px;">
                     <div class="form-field">
                         <label>Max RSI</label>
-                        <input type="number" id="f-max-rsi" value="70" step="1">
+                        <input type="number" id="f-max-rsi" value="65" step="1">
                     </div>
                     <div class="form-field">
                         <label>Max % Above 52w Low</label>
-                        <input type="number" id="f-near-low" value="200" step="10">
+                        <input type="number" id="f-near-low" value="150" step="10">
                     </div>
                     <div class="form-field">
                         <label>Min Down Days</label>
-                        <input type="number" id="f-consec-down" value="0" step="1">
+                        <input type="number" id="f-consec-down" value="2" step="1">
                     </div>
                     <button class="btn btn-outline" onclick="sendScreenerToML()" id="btn-send-ml" style="display:none">SEND TO ML →</button>
                 </div>
@@ -1168,8 +1232,11 @@ loadWatchlist();
                             RSI ${sig.rsi ?? '–'} · Vol20 ${sig.volSurge20 != null ? sig.volSurge20+'×' : '–'} · ATR ${sig.atr ?? '–'}% · ${sig.consecDown ?? 0}d↓
                         </div>
                     </div>
-                    <div style="font-family:var(--mono); font-size:18px; font-weight:800; color:${probColor}; text-align:right;" onclick="event.stopPropagation();savePickFromML('${r.ticker}',${r.price||0},${r.mlProb||0})" title="Click to save to tracker">${r.mlPct}%<br><span style="font-size:9px;color:var(--muted);">SAVE</span></div>
-                    <div class="badge ${r.mlProb >= 0.4 ? 'badge-strong' : r.mlProb >= 0.25 ? 'badge-neutral' : 'badge-weak'}">${r.mlProb >= 0.4 ? 'STRONG' : r.mlProb >= 0.25 ? 'POSSIBLE' : 'LOW'}</div>
+                    <div style="font-family:var(--mono); font-size:18px; font-weight:800; color:${probColor}; text-align:right;">${r.mlPct}%</div>
+                    <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+                        <div class="badge ${r.mlProb >= 0.4 ? 'badge-strong' : r.mlProb >= 0.25 ? 'badge-neutral' : 'badge-weak'}">${r.mlProb >= 0.4 ? 'STRONG' : r.mlProb >= 0.25 ? 'POSSIBLE' : 'LOW'}</div>
+                        <button class="btn btn-sm" style="padding:4px 10px;font-size:10px;width:100%;" onclick="event.stopPropagation();savePickFromML('${r.ticker}',${r.price||0},${r.mlProb||0})">💾 SAVE</button>
+                    </div>
                 </div>
                 ${headline ? `<div style="padding:6px 14px 8px; font-size:11px; color:${newsColor}; border-top:1px solid var(--border); font-family:var(--mono);">${newsLabel} ${headline}</div>` : ''}
             </div>`;

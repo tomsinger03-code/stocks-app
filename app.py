@@ -471,76 +471,59 @@ def get_movers():
 @app.route('/api/screener', methods=['POST'])
 def screener():
     """
-    Smart screener — finds stocks that look like they're ABOUT to spike.
-    Filters: price range, volume building, near lows, not already run.
-    Output feeds directly into ML scan universe.
+    Smart screener — finds stocks ABOUT to spike.
+    Uses threading for speed. Excludes leveraged ETFs.
     """
     try:
         import yfinance as yf
         from ml_model import SCAN_UNIVERSE, extract_features
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         criteria = request.json or {}
-        min_price    = float(criteria.get('minPrice', 1))
-        max_price    = float(criteria.get('maxPrice', 30))
-        min_vol_surge = float(criteria.get('minVolSurge', 2.0))
-        max_rsi      = float(criteria.get('maxRsi', 70))
-        min_consec_down = int(criteria.get('minConsecDown', 0))
-        near_low_pct = float(criteria.get('nearLowPct', 200))  # % above 52w low
+        min_price       = float(criteria.get('minPrice', 1))
+        max_price       = float(criteria.get('maxPrice', 15))
+        min_vol_surge   = float(criteria.get('minVolSurge', 3.0))
+        max_rsi         = float(criteria.get('maxRsi', 65))
+        min_consec_down = int(criteria.get('minConsecDown', 2))
+        near_low_pct    = float(criteria.get('nearLowPct', 150))
+
+        # Leveraged ETF keywords to exclude
+        EXCLUDE_KEYWORDS = ['2x','3x','-2x','-3x','ultra','leverage','leveraged',
+                            'proshares','direxion','2xl','3xl']
 
         results = []
         skipped = []
 
-        for ticker in SCAN_UNIVERSE:
+        def check_ticker(ticker):
+            # Skip leveraged ETFs
+            tl = ticker.lower()
+            if any(k in tl for k in EXCLUDE_KEYWORDS):
+                return None
             try:
                 hist = yf.Ticker(ticker).history(period="3mo", interval="1d", auto_adjust=True)
                 if hist is None or len(hist) < 25:
-                    continue
-
+                    return None
                 closes  = hist["Close"].tolist()
                 volumes = hist["Volume"].tolist()
                 opens   = hist["Open"].tolist()
                 price   = closes[-1]
-
-                # Price range filter
                 if not (min_price <= price <= max_price):
-                    continue
-
+                    return None
                 feats = extract_features(closes, volumes, opens)
                 if not feats:
-                    continue
-
-                # Volume building (not already peaked)
-                vol_surge = feats.get("vol_surge_20d", 1)
-                if vol_surge < min_vol_surge:
-                    skipped.append(f"{ticker}: low vol surge {vol_surge:.1f}x")
-                    continue
-
-                # Not already overbought
-                rsi = feats.get("rsi", 50)
-                if rsi > max_rsi:
-                    skipped.append(f"{ticker}: RSI {rsi:.0f} too high")
-                    continue
-
-                # Not already spiked
-                mom3 = feats.get("mom3d", 0) or 0
-                if mom3 >= 15:
-                    skipped.append(f"{ticker}: already spiked {mom3:.1f}%")
-                    continue
-
-                # Near 52w low filter
+                    return None
+                vol_surge    = feats.get("vol_surge_20d", 1)
+                rsi          = feats.get("rsi", 50)
+                mom3         = feats.get("mom3d", 0) or 0
                 pct_above_low = feats.get("price_vs_52low", 999)
-                if pct_above_low > near_low_pct:
-                    skipped.append(f"{ticker}: {pct_above_low:.0f}% above 52w low")
-                    continue
-
-                # Consecutive down days (oversold pressure building)
-                consec = feats.get("consec_down", 0)
-                if consec < min_consec_down:
-                    continue
-
-                change_pct = (closes[-1] - closes[-2]) / closes[-2] * 100 if len(closes) >= 2 else 0
-
-                results.append({
+                consec       = feats.get("consec_down", 0)
+                if vol_surge < min_vol_surge: return None
+                if rsi > max_rsi: return None
+                if mom3 >= 15: return None
+                if pct_above_low > near_low_pct: return None
+                if consec < min_consec_down: return None
+                change_pct = (closes[-1]-closes[-2])/closes[-2]*100 if len(closes)>=2 else 0
+                return {
                     "ticker": ticker,
                     "price": round(price, 2),
                     "changePercent": round(change_pct, 2),
@@ -555,21 +538,25 @@ def screener():
                         "bollSqueeze": round(feats.get("boll_squeeze", 0), 4),
                         "atr": round(feats.get("atr_pct", 0), 2),
                     }
-                })
-                time.sleep(0.1)
+                }
+            except:
+                return None
 
-            except Exception as e:
-                skipped.append(f"{ticker}: {e}")
-                continue
+        # Run in parallel — much faster than sequential
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(check_ticker, t): t for t in SCAN_UNIVERSE}
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    results.append(result)
 
-        # Sort by volume surge (strongest signal first)
+        # Sort by volume surge
         results.sort(key=lambda x: x["signals"]["volSurge20"], reverse=True)
 
         return jsonify({
             "results": results,
             "passed": len(results),
             "scanned": len(SCAN_UNIVERSE),
-            "skipped": len(skipped),
             "filters_applied": criteria,
         })
 
