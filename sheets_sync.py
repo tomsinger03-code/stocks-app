@@ -27,7 +27,7 @@ import time
 
 SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "1f4FtUqsXuVlyptRxbsSSiouoVa7IEDM2Y3SNWSYc7ho")
 CREDS_FILE = os.getenv("GOOGLE_CREDS_FILE", "singer-scout-creds.json")
-SHEET_NAME = "Picks"
+SHEET_NAME = "Sheet1"
 
 _sheets_service = None
 
@@ -72,20 +72,25 @@ def _ensure_header(service):
             "ID", "Ticker", "Pick Date", "Entry Price $",
             "ML Prob %", "Target Gain %", "Predicted Days",
             "Day 1 $", "Day 2 $", "Day 3 $", "Day 4 $", "Day 5 $",
-            "Outcome", "Outcome Day", "Actual Gain %", "Notes"
+            "Outcome", "Outcome Day", "Actual Gain %", "Catalyst Score", "Notes"
         ]]
-        result = service.spreadsheets().values().get(
-            spreadsheetId=SHEET_ID,
-            range=f"{SHEET_NAME}!A1:P1"
-        ).execute()
-        existing = result.get("values", [])
-        if not existing or existing[0][0] != "ID":
+        try:
+            result = service.spreadsheets().values().get(
+                spreadsheetId=SHEET_ID,
+                range=f"{SHEET_NAME}!A1:Q1"
+            ).execute()
+            existing = result.get("values", [])
+        except:
+            existing = []
+            
+        if not existing or not existing[0] or existing[0][0] != "ID":
             service.spreadsheets().values().update(
                 spreadsheetId=SHEET_ID,
                 range=f"{SHEET_NAME}!A1",
                 valueInputOption="RAW",
                 body={"values": header}
             ).execute()
+            print("Sheets: header row written")
     except Exception as e:
         print(f"Header setup error: {e}")
 

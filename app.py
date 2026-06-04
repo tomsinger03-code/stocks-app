@@ -6,6 +6,7 @@ import os
 from datetime import datetime
 import time
 from database import init_db, save_stock, init_picks_table, save_pick, update_pick_price, update_pick_outcome, get_all_picks, get_open_picks
+from signals import get_all_signals, get_float_data
 from sheets_sync import add_pick_to_sheet, update_pick_in_sheet, sync_all_picks_to_sheet, is_connected as sheets_connected
 from ml_model import (
     train_model_background, predict, get_status,
@@ -500,6 +501,11 @@ def screener():
             if any(k in tl for k in EXCLUDE_KEYWORDS):
                 return None
             try:
+                # Quick float/reverse split check first
+                float_info = get_float_data(ticker)
+                if float_info.get("hasReverseSplit"):
+                    return None  # Skip reverse split stocks
+                
                 hist = yf.Ticker(ticker).history(period="3mo", interval="1d", auto_adjust=True)
                 if hist is None or len(hist) < 25:
                     return None
@@ -523,10 +529,17 @@ def screener():
                 if pct_above_low > near_low_pct: return None
                 if consec < min_consec_down: return None
                 change_pct = (closes[-1]-closes[-2])/closes[-2]*100 if len(closes)>=2 else 0
+                # Get extended signals
+                ext = get_all_signals(ticker)
+                
+                # Add float size to signals
+                float_m = ext["float"].get("floatM")
+                
                 return {
                     "ticker": ticker,
                     "price": round(price, 2),
                     "changePercent": round(change_pct, 2),
+                    "catalystScore": ext["catalystScore"],
                     "signals": {
                         "rsi": round(rsi, 1),
                         "volSurge20": round(vol_surge, 1),
@@ -537,6 +550,15 @@ def screener():
                         "pctAbove52wLow": round(pct_above_low, 1),
                         "bollSqueeze": round(feats.get("boll_squeeze", 0), 4),
                         "atr": round(feats.get("atr_pct", 0), 2),
+                        "floatM": float_m,
+                        "smallFloat": ext["float"].get("smallFloat"),
+                        "recent8K": ext["sec"].get("recent8K"),
+                        "insiderBuying": ext["insider"].get("insiderBuying"),
+                        "shortPct": ext["short"].get("shortPct"),
+                        "squeezeCandidate": ext["short"].get("squeezeCandidate"),
+                        "redditMentions": ext["reddit"].get("mentions24h"),
+                        "redditTrending": ext["reddit"].get("trending"),
+                        "earningsBeat": ext["earnings"].get("recentBeat"),
                     }
                 }
             except:
@@ -674,12 +696,20 @@ def ml_scan():
             # News sentiment
             news = get_news_sentiment(ticker)
 
+            # Extended catalyst signals
+            ext = get_all_signals(ticker)
+            
+            # Skip reverse splits
+            if ext.get("reverseSplit"):
+                continue
+
             results.append({
                 "ticker": ticker,
                 "price": round(price, 2),
                 "changePercent": round(change_pct, 2),
                 "mlProb": prob,
                 "mlPct": round(prob * 100, 1),
+                "catalystScore": ext["catalystScore"],
                 "news": {
                     "score": news["score"],
                     "count": news["count"],
@@ -693,6 +723,12 @@ def ml_scan():
                     "atr": round(feats["atr_pct"], 2) if feats else None,
                     "consecDown": feats["consec_down"] if feats else None,
                     "bollSqueeze": round(feats["boll_squeeze"], 4) if feats else None,
+                    "floatM": ext["float"].get("floatM"),
+                    "recent8K": ext["sec"].get("recent8K"),
+                    "insiderBuying": ext["insider"].get("insiderBuying"),
+                    "squeezeCandidate": ext["short"].get("squeezeCandidate"),
+                    "redditTrending": ext["reddit"].get("trending"),
+                    "shortPct": ext["short"].get("shortPct"),
                 } if feats else {}
             })
 

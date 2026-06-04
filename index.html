@@ -1039,13 +1039,24 @@ async function runScreener() {
                 window._screenerResults.map(r => {
                     const sig = r.signals || {};
                     const vc = sig.volSurge20 >= 5 ? 'var(--accent)' : sig.volSurge20 >= 2 ? 'var(--warn)' : 'var(--muted)';
-                    return `<div class="screener-row" style="cursor:pointer;" onclick="loadTicker('${r.ticker}')">
+                    const cs = r.catalystScore || 0;
+                    const csColor = cs >= 50 ? 'var(--accent)' : cs >= 25 ? 'var(--warn)' : 'var(--muted)';
+                    return `<div class="screener-row" style="cursor:pointer;grid-template-columns:60px 70px 1fr 1fr 80px;" onclick="loadTicker('${r.ticker}')">
                         <div class="screener-ticker">${r.ticker}</div>
-                        <div style="font-family:var(--mono);font-size:13px;">$${fmt(r.price)}<br>
+                        <div style="font-family:var(--mono);font-size:12px;">$${fmt(r.price)}<br>
                             <span style="font-size:10px;color:${r.changePercent>=0?'var(--accent)':'var(--danger)'};">${r.changePercent>=0?'+':''}${fmt(r.changePercent)}%</span></div>
-                        <div style="font-family:var(--mono);font-size:11px;color:var(--muted);">RSI ${sig.rsi??'–'} · ${sig.consecDown??0}d↓</div>
-                        <div style="font-family:var(--mono);font-size:11px;"><span style="color:${vc};">Vol ${sig.volSurge20??'–'}×</span><br>
-                            <span style="color:var(--muted);">${sig.pctAbove52wLow??'–'}% > 52wk low</span></div>
+                        <div style="font-family:var(--mono);font-size:10px;">
+                            RSI ${sig.rsi??'–'} · ${sig.consecDown??0}d↓<br>
+                            <span style="color:${vc};">Vol ${sig.volSurge20??'–'}×</span>
+                            ${sig.floatM ? `<br>Float ${sig.floatM}M` : ''}
+                        </div>
+                        <div style="font-size:10px;display:flex;flex-direction:column;gap:2px;">
+                            ${sig.recent8K ? '<span style="background:rgba(0,229,160,0.2);color:var(--accent);padding:1px 5px;border-radius:3px;">📋 8-K Filed</span>' : ''}
+                            ${sig.insiderBuying ? '<span style="background:rgba(0,229,160,0.2);color:var(--accent);padding:1px 5px;border-radius:3px;">👤 Insider Buy</span>' : ''}
+                            ${sig.squeezeCandidate ? '<span style="background:rgba(255,159,28,0.2);color:var(--warn);padding:1px 5px;border-radius:3px;">🔥 Squeeze</span>' : ''}
+                            ${sig.redditTrending ? '<span style="background:rgba(255,69,96,0.2);color:var(--danger);padding:1px 5px;border-radius:3px;">📱 Reddit</span>' : ''}
+                            <span style="color:${csColor};font-weight:700;">Catalyst: ${cs}</span>
+                        </div>
                         <button class="btn btn-outline btn-sm" onclick="event.stopPropagation();loadTicker('${r.ticker}')">ANALYSE →</button>
                     </div>`;
                 }).join('');
@@ -1229,8 +1240,14 @@ loadWatchlist();
                             <div class="mini-bar" style="width:${Math.min(r.mlProb*200,100)}%; background:${probColor};"></div>
                         </div>
                         <div style="font-family:var(--mono); font-size:10px; color:var(--muted); margin-top:3px;">
-                            RSI ${sig.rsi ?? '–'} · Vol20 ${sig.volSurge20 != null ? sig.volSurge20+'×' : '–'} · ATR ${sig.atr ?? '–'}% · ${sig.consecDown ?? 0}d↓
+                            RSI ${sig.rsi ?? '–'} · Vol ${sig.volSurge20 != null ? sig.volSurge20+'×' : '–'} · ${sig.consecDown ?? 0}d↓${sig.floatM ? ` · Float ${sig.floatM}M` : ''}
                         </div>
+                    <div style="font-size:10px;margin-top:3px;display:flex;gap:3px;flex-wrap:wrap;">
+                        ${sig.recent8K ? '<span style=\"background:rgba(0,229,160,0.2);color:var(--accent);padding:1px 5px;border-radius:3px;font-size:9px;\">8-K</span>' : ''}
+                        ${sig.insiderBuying ? '<span style=\"background:rgba(0,229,160,0.2);color:var(--accent);padding:1px 5px;border-radius:3px;font-size:9px;\">INSIDER</span>' : ''}
+                        ${sig.squeezeCandidate ? '<span style=\"background:rgba(255,159,28,0.2);color:var(--warn);padding:1px 5px;border-radius:3px;font-size:9px;\">SQUEEZE</span>' : ''}
+                        ${sig.redditTrending ? '<span style=\"background:rgba(255,69,96,0.2);color:var(--danger);padding:1px 5px;border-radius:3px;font-size:9px;\">REDDIT🔥</span>' : ''}
+                    </div>
                     </div>
                     <div style="font-family:var(--mono); font-size:18px; font-weight:800; color:${probColor}; text-align:right;">${r.mlPct}%</div>
                     <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
