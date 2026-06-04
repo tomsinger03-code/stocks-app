@@ -477,7 +477,8 @@ def screener():
     """
     try:
         import yfinance as yf
-        import urllib.request as _ur, json as _j
+        import urllib.request as _screener_ur
+        import json as _screener_j
         from ml_model import SCAN_UNIVERSE, extract_features
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -498,9 +499,9 @@ def screener():
         # Source 1: Yahoo most active
         try:
             url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=100&formatted=false"
-            req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with _ur.urlopen(req, timeout=8) as r:
-                data = _j.loads(r.read())
+            req = _screener_ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with _screener_ur.urlopen(req, timeout=8) as r:
+                data = _screener_j.loads(r.read())
             for q in data.get("finance",{}).get("result",[{}])[0].get("quotes",[]):
                 t = q.get("symbol","")
                 if t and len(t) <= 5 and "." not in t:
@@ -512,9 +513,9 @@ def screener():
         # Source 2: Yahoo day gainers
         try:
             url2 = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=100&formatted=false"
-            req2 = _ur.Request(url2, headers={"User-Agent": "Mozilla/5.0"})
-            with _ur.urlopen(req2, timeout=8) as r2:
-                data2 = _j.loads(r2.read())
+            req2 = _screener_ur.Request(url2, headers={"User-Agent": "Mozilla/5.0"})
+            with _screener_ur.urlopen(req2, timeout=8) as r2:
+                data2 = _screener_j.loads(r2.read())
             for q in data2.get("finance",{}).get("result",[{}])[0].get("quotes",[]):
                 t = q.get("symbol","")
                 if t and len(t) <= 5 and "." not in t:
@@ -528,9 +529,9 @@ def screener():
             from datetime import date as _date
             today = _date.today().isoformat()
             url3 = f"https://efts.sec.gov/LATEST/search-index?forms=8-K&dateRange=custom&startdt={today}&enddt={today}"
-            req3 = _ur.Request(url3, headers={"User-Agent": "SingerScout research@singer-scout.com"})
-            with _ur.urlopen(req3, timeout=8) as r3:
-                data3 = _j.loads(r3.read())
+            req3 = _screener_ur.Request(url3, headers={"User-Agent": "SingerScout research@singer-scout.com"})
+            with _screener_ur.urlopen(req3, timeout=8) as r3:
+                data3 = _screener_j.loads(r3.read())
             for h in data3.get("hits",{}).get("hits",[]) or []:
                 t = h.get("_source",{}).get("ticker","").upper()
                 if t and len(t) <= 5 and t.isalpha():

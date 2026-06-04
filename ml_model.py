@@ -207,7 +207,7 @@ def _train_model():
                 else:
                     # Old format - skip and retrain
                     _log("Old model format - retraining...")
-                    import os; os.remove(MODEL_PATH)
+                    os.remove(MODEL_PATH)
                 _model_status     = "ready"
                 _model_trained_at = datetime.now().isoformat()
                 _log("Cached model loaded OK")
