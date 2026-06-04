@@ -147,9 +147,27 @@ def score_candidates(tickers):
             if rsi > MAX_RSI:
                 continue
 
+            # Reverse split detection — skip if up 30%+ today with huge volume
+            day_change = (closes[-1] - closes[-2]) / closes[-2] * 100 if len(closes) >= 2 else 0
+            if day_change >= 30 and vol_surge >= 5:
+                print(f"  {ticker}: likely reverse split (+{day_change:.0f}% today, {vol_surge:.1f}x vol) — skipped")
+                continue
+
+            # Check yfinance splits data
+            try:
+                tk_info = yf.Ticker(ticker)
+                splits = tk_info.splits
+                if splits is not None and not splits.empty:
+                    recent = splits.tail(5)
+                    if any(0 < v < 1 for v in recent.values if v != 0):
+                        print(f"  {ticker}: reverse split detected in history — skipped")
+                        continue
+            except:
+                pass
+
             # Already spiked check
             mom3 = (closes[-1] - closes[-4]) / closes[-4] * 100 if len(closes) >= 4 else 0
-            if mom3 >= 15:
+            if mom3 >= 30:
                 continue
 
             # Near 52w low
@@ -228,10 +246,33 @@ def send_email(picks):
 
     # Build HTML email
     picks_html = ""
+    BLACKLIST = ['WXM']  # Known reverse split stocks
+    picks = [p for p in picks if p['ticker'] not in BLACKLIST]
     for i, p in enumerate(picks[:5], 1):
         sig = p.get("signals", {})
         score = p.get("score", 0)
         score_color = "#00e5a0" if score >= 40 else "#ff9f1c" if score >= 25 else "#64748b"
+        
+        # Build reasoning
+        reasons = []
+        if sig.get('volSurge', 0) >= 5:
+            reasons.append(f"🔥 Volume {sig['volSurge']}× normal — unusual buying interest")
+        elif sig.get('volSurge', 0) >= 3:
+            reasons.append(f"📈 Volume {sig['volSurge']}× normal — building momentum")
+        if sig.get('rsi', 50) < 35:
+            reasons.append(f"💡 RSI {sig['rsi']} — heavily oversold, bounce candidate")
+        elif sig.get('rsi', 50) < 45:
+            reasons.append(f"📊 RSI {sig['rsi']} — oversold, momentum building")
+        if sig.get('consecDown', 0) >= 3:
+            reasons.append(f"🔄 {sig['consecDown']} consecutive down days — selling exhaustion")
+        if sig.get('pctAboveLow', 999) < 50:
+            reasons.append(f"📉 Only {sig['pctAboveLow']}% above 52w low — coiled spring")
+        if sig.get('mom3d', 0) > 5:
+            reasons.append(f"⚡ Up {sig['mom3d']}% in 3 days — momentum starting")
+        if not reasons:
+            reasons.append("Mixed signals — use as speculative only")
+        
+        reasoning_html = "".join(f'<div style="font-size:11px;color:#94a3b8;font-family:monospace;padding:3px 0;">• {r}</div>' for r in reasons)
 
         picks_html += f"""
         <div style="background:#1a2030;border:1px solid #242d3d;border-radius:8px;padding:16px;margin-bottom:12px;">
@@ -261,8 +302,12 @@ def send_email(picks):
                     <div style="font-size:16px;font-weight:700;color:#ff9f1c;font-family:monospace;">{sig.get('consecDown','–')}d↓</div>
                 </div>
             </div>
-            <div style="font-size:11px;color:#64748b;font-family:monospace;">
+            <div style="font-size:11px;color:#64748b;font-family:monospace;margin-bottom:8px;">
                 {sig.get('pctAboveLow','–')}% above 52w low · Mom3d: {sig.get('mom3d','–')}%
+            </div>
+            <div style="background:#0b0e13;border-radius:6px;padding:8px;margin-bottom:8px;">
+                <div style="font-size:10px;color:#64748b;font-family:monospace;margin-bottom:4px;">WHY IT MIGHT JUMP:</div>
+                {reasoning_html}
             </div>
             <a href="https://finance.yahoo.com/quote/{p['ticker']}" 
                style="display:inline-block;margin-top:8px;background:#00e5a0;color:#000;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;text-decoration:none;">

@@ -702,8 +702,15 @@ def ml_scan():
 
     with ThreadPoolExecutor(max_workers=6) as executor:
         futures = {executor.submit(score_ticker, t): t for t in scan_list}
-        for future in as_completed(futures, timeout=90):
-            res = future.result()
+        try:
+            completed = as_completed(futures, timeout=120)
+        except Exception:
+            completed = futures.keys()
+        for future in list(futures.keys()):
+            try:
+                res = future.result(timeout=15)
+            except Exception:
+                continue
             if not res:
                 continue
             ticker, closes, volumes, opens, prob = res
@@ -715,6 +722,13 @@ def ml_scan():
             # Don't suggest stocks where the move already happened
             from ml_model import extract_features, FEATURE_COLS
             feats = extract_features(closes, volumes, opens)
+
+            # Reverse split check — up 30%+ today = likely artificial
+            if len(closes) >= 2:
+                day_chg = (closes[-1] - closes[-2]) / closes[-2] * 100
+                if day_chg >= 30:
+                    errors.append(f"{ticker}: up {day_chg:.0f}% today — likely reverse split (skipped)")
+                    continue
 
             if feats:
                 # Already ran: up 15%+ in last 3 days
@@ -1103,4 +1117,4 @@ def send_report():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), threaded=True)
