@@ -483,12 +483,12 @@ def screener():
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         criteria = request.json or {}
-        min_price       = float(criteria.get('minPrice', 1))
-        max_price       = float(criteria.get('maxPrice', 15))
-        min_vol_surge   = float(criteria.get('minVolSurge', 2.0))
-        max_rsi         = float(criteria.get('maxRsi', 70))
+        min_price       = float(criteria.get('minPrice', 0.5))
+        max_price       = float(criteria.get('maxPrice', 20))
+        min_vol_surge   = float(criteria.get('minVolSurge', 1.5))
+        max_rsi         = float(criteria.get('maxRsi', 75))
         min_consec_down = int(criteria.get('minConsecDown', 0))
-        near_low_pct    = float(criteria.get('nearLowPct', 300))
+        near_low_pct    = float(criteria.get('nearLowPct', 500))
 
         EXCLUDE_KEYWORDS = ['2x','3x','-2x','-3x','ultra','leverage','leveraged',
                             'proshares','direxion','2xl','3xl']
@@ -815,15 +815,18 @@ def ml_scan():
                     errors.append(f"{ticker}: near 52w high (skipped)")
                     continue
 
-            # News sentiment
+            # News sentiment (quick)
             news = get_news_sentiment(ticker)
 
-            # Extended catalyst signals
-            ext = get_all_signals(ticker)
-            
-            # Skip reverse splits
-            if ext.get("reverseSplit"):
+            # Skip extended signals during scan — too slow
+            # Just do basic reverse split check
+            day_chg = (closes[-1]-closes[-2])/closes[-2]*100 if len(closes)>=2 else 0
+            if day_chg >= 40:
+                errors.append(f"{ticker}: likely reverse split skipped")
                 continue
+
+            ext = {"catalystScore": 0, "float": {}, "sec": {}, 
+                   "insider": {}, "short": {}, "reddit": {}, "reverseSplit": False}
 
             results.append({
                 "ticker": ticker,
